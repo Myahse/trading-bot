@@ -50,7 +50,7 @@ what the Python backtests showed. Tick *Visual mode* to watch it trade candle by
 
 | Part | Detail |
 |---|---|
-| Structure | Swing highs and lows (fractals), support/resistance zones, trendlines chosen from pairs of swings, order blocks, trend (HH/HL vs LH/LL) on the chart timeframe and on the higher timeframe |
+| Structure | Swing highs and lows (fractals), support/resistance zones (recent swings on the chart, **all history** on the higher timeframe), trendlines chosen from pairs of swings, order blocks, trend (HH/HL vs LH/LL) on the chart timeframe and on the higher timeframe |
 | Setups | **Rejection:** price tags 2+ levels and closes back the other way. **Breakout:** a strong candle closes through a trendline. Both only in the higher-timeframe direction |
 | Confirmation | **Break:** enter when price trades through the signal candle's high/low within N candles, cancelled if the stop level trades first. **Close:** enter after a candle closes beyond it. **None:** enter at the next open |
 | Stop / target | The stop goes beyond the levels used (and at least `min stop ATR` away). The target is the nearest opposing level, or a default R. Setups below the minimum reward:risk are skipped. Both sit on the server |
@@ -80,7 +80,10 @@ Choose **Custom** to set every value yourself in the inputs.
   the chart's candles). Higher-timeframe trendlines therefore break on higher-timeframe closes.
 - **Breakouts:** only entry-chart trendlines trigger breakout entries. Higher-timeframe lines are used
   for retests and as targets.
-- **History used:** the last 800 chart candles and 300 higher-timeframe candles, not all history.
+- **History used:** the last `History: chart candles` (default 5,000) and `higher-timeframe candles`
+  (default 1,000, about 4 years of D1) candles. Higher-timeframe zones are built from **all** of
+  them, so old daily/weekly levels still count, as in the Python bot. More history is slower: in
+  the Strategy Tester, 2,000 chart candles gives the same signals and runs faster.
 - **Confirmation timing:** the confirmation is watched tick by tick. A pending setup is forgotten if
   the EA is restarted.
 - **Not included:** the screenshots with the step panel, fundamentals and outlooks stay in the Python

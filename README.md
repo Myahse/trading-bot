@@ -42,7 +42,7 @@ is used only after it has closed.
 | Concept | How it is detected (`tradebot/structure.py`, `orderblocks.py`, `fractal.py`) |
 |---|---|
 | **Swing points (fractals)** | A high/low that is the extreme of `pivot` bars on each side, on both timeframes. A swing is only *known* `pivot` bars later, so there is no look-ahead. |
-| **Support / resistance** | Recent swings whose prices sit within `0.6 x ATR` of each other are clustered into zones (2+ touches), separately per timeframe. |
+| **Support / resistance** | Swings whose prices sit within `0.6 x ATR` of each other are clustered into zones (2+ touches). On the entry chart only the last 30-40 swings are used (intraday levels). On the higher timeframe **all history** is used (`htf_zone_lookback = 0`), so old daily and weekly levels still count. |
 | **Trendlines** | Drawn the way a trader would. Every pair of the last 8 swing lows (rising) or swing highs (falling) is a candidate. A line is rejected if any candle between its anchors pokes through it (wicks included), if the anchors are too close together, or if it is absurdly steep. The survivors are ranked by touches (swing points sitting on the line), then the most recent touch, then length. On each side the bot keeps the best intact line and the best just-broken one (for the retest). It does the same on the higher timeframe. |
 | **Order blocks** | Bullish OB = the last red candle before an impulsive move (>= 1 ATR) that closes above the last swing high (break of structure). Bearish is the mirror. It is dead once price closes through it, or after `ob_max_age` bars. |
 | **Bias** | Higher highs + higher lows = up, lower highs + lower lows = down. Trades must agree with the higher-timeframe bias. |

@@ -43,7 +43,9 @@ class StrategyConfig:
     zone_tolerance_atr: float = 0.6     # pivots within this many ATRs form one zone
     htf_zone_tolerance_atr: float = 0.3 # the same on the higher timeframe (its ATR is much bigger)
     zone_min_touches: int = 2
-    zone_lookback_pivots: int = 40      # only the most recent pivots build zones
+    zone_lookback_pivots: int = 40      # only the most recent pivots build entry-chart zones
+    htf_zone_lookback: int = 0          # higher-timeframe swings used for its zones (0 = all history:
+                                        # old daily/weekly levels still matter)
     touch_buffer_atr: float = 0.25      # how close counts as "tagging" a level
     stop_buffer_atr: float = 0.3        # stop distance beyond the structure
     min_stop_atr: float = 0.0           # never place the stop closer than this many ATRs
@@ -169,7 +171,8 @@ class Market:
             lines += self.htf_lines.lines_at(t, hp, int(cfg.retest_window * self.htf.bars_per_candle))
             ha = self.htf.atr_known_at(t)
             if not np.isnan(ha):
-                htf_zones = sr_zones(hp[-cfg.zone_lookback_pivots:], cfg.htf_zone_tolerance_atr * ha, 2)
+                recent = hp[-cfg.htf_zone_lookback:] if cfg.htf_zone_lookback > 0 else hp
+                htf_zones = sr_zones(recent, cfg.htf_zone_tolerance_atr * ha, 2)
 
         def split(zs):
             return (sorted((z for z in zs if z.mid < c), key=lambda z: -z.mid),

@@ -65,6 +65,10 @@ input int      InpNewsMinutes     = 30;             // Minutes before/after the 
 input bool     InpAllowReal       = false;          // Allow trading a REAL account
 input long     InpMagic           = 20261007;       // Magic number
 
+input group "History"
+input int      InpHistoryBars     = 5000;           // Chart candles analysed (more = older levels, slower)
+input int      InpHTFHistoryBars  = 1000;           // Higher-timeframe candles (zones use all of them)
+
 input group "Display"
 input bool     InpDraw            = true;           // Draw zones, trendlines, order blocks, swings
 input bool     InpPanel           = true;           // Show the analysis panel
@@ -84,8 +88,6 @@ input bool     InpScreenshots     = true;           // Save a screenshot for eve
 #define LINE_WICK_ATR       0.1
 #define LINE_BREAK_ATR      0.1
 #define LINE_MAX_SLOPE_ATR  0.5
-#define BARS_ENTRY          800
-#define BARS_HTF            300
 #define PFX                 "TB_"
 
 //--- data types
@@ -502,7 +504,7 @@ double LineValue(const Line &ln, int t)
 bool Analyse()
   {
    ArraySetAsSeries(R, false);
-   N = CopyRates(_Symbol, PERIOD_CURRENT, 1, BARS_ENTRY, R);
+   N = CopyRates(_Symbol, PERIOD_CURRENT, 1, MathMax(InpHistoryBars, 200), R);
    if(N < 100) return false;
    CalcATR(R, N, A);
    NP = FindPivots(R, N, C.pivot, C.pivot, P);
@@ -523,7 +525,7 @@ bool Analyse()
    if(C.htf != PERIOD_CURRENT && PeriodSeconds(C.htf) > PeriodSeconds(PERIOD_CURRENT))
      {
       ArraySetAsSeries(RH, false);
-      NH = CopyRates(_Symbol, C.htf, 1, BARS_HTF, RH);
+      NH = CopyRates(_Symbol, C.htf, 1, MathMax(InpHTFHistoryBars, 100), RH);
       if(NH >= 2 * ATR_PERIOD)
         {
          CalcATR(RH, NH, AH);
@@ -531,7 +533,7 @@ bool Analyse()
          biasH = Bias(PH, NPH);
          Zone hz[];
          if(Valid(AH[NH - 1]))
-            BuildZones(PH, NPH, C.zoneLookback, HTF_ZONE_TOL_ATR * AH[NH - 1], 2, hz);
+            BuildZones(PH, NPH, NPH, HTF_ZONE_TOL_ATR * AH[NH - 1], 2, hz);   // all history: old levels count
          SplitZones(hz, c, HZS, HZR);
          FindLines(RH, NH, PH, NPH, AH, NH - 1, C.retest, 4 * C.htfPivot, true, LH);
         }
