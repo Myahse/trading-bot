@@ -5,8 +5,9 @@ import pytest
 from tradebot import data
 from tradebot.backtest import run_backtest
 from tradebot.orderblocks import find_order_blocks
-from tradebot.strategy import Market, StrategyConfig
-from tradebot.structure import Pivot, Trendline, find_pivots, sr_zones
+from tradebot.fractal import HigherTimeframe
+from tradebot.strategy import Market, StrategyConfig, mode_config
+from tradebot.structure import Pivot, Trendline, find_pivots, sr_zones, trendlines
 
 
 def candles(rows):
@@ -47,20 +48,55 @@ def test_bullish_order_block_is_last_down_candle_before_break():
     assert ob.invalidated_at is None
 
 
+def test_trendline_break_is_recorded():
+    pivots = [Pivot(0, 10.0, "high", 2), Pivot(10, 8.0, "high", 12)]   # falling: -0.2 per bar
+    closes = np.full(30, 5.0)
+    closes[20] = 7.5                                                    # line is at 6.0 on bar 20
+    (line,) = trendlines(pivots, closes, 25, tolerance=0.1)
+    assert line.kind == "resistance" and line.broken_at == 20
+    assert trendlines(pivots, closes, 19, tolerance=0.1)[0].broken_at is None
+
+
+def test_breakout_signal_on_trendline_break():
+    # Falling highs at bars 5 and 15, then a strong green candle closes through the line.
+    rows = [(10, 10.5, 9.5, 10)] * 40
+    rows[5], rows[15] = (10, 14, 9.5, 10), (10, 12, 9.5, 10)          # line: 14 -> 12, slope -0.2
+    rows[20] = (10, 11.6, 9.9, 11.5)                                    # line at 11.0 on bar 20
+    cfg = StrategyConfig(pivot_left=3, pivot_right=3, atr_period=3, trend_filter=False, min_rr=0.5)
+    sig = Market(candles(rows), cfg).analyze(20).signal
+    assert sig is not None and (sig.side, sig.setup) == ("long", "breakout")
+    assert sig.stop < 9.9
+
+
+def test_higher_timeframe_candle_is_known_only_after_it_closes():
+    df = data.synthetic(n=100, seed=2)
+    htf = HigherTimeframe(df, 10, pivot=2, atr_period=3)
+    assert list(htf.known_at[:3]) == [10, 20, 30]
+    assert len(htf.bars) == 9                       # the last group may be unfinished, so it is dropped
+    assert htf.bars.high[0] == df.high[:10].max()
+    assert all(p.confirmed_at >= p.index for p in htf.pivots)
+
+
+CONFIGS = [StrategyConfig(min_confluence=1), StrategyConfig(min_confluence=1, htf=6),
+           StrategyConfig(min_confluence=1, htf="4h", pivot_left=3, pivot_right=3)]
+
+
 @pytest.mark.parametrize("seed", [1, 7])
-def test_no_lookahead(seed):
+@pytest.mark.parametrize("cfg", CONFIGS, ids=["entry-only", "htf-bars", "htf-4h"])
+def test_no_lookahead(seed, cfg):
     """What the strategy decides at bar t must not change when future bars are removed."""
     df = data.synthetic(n=600, seed=seed)
-    cfg = StrategyConfig(min_confluence=1)
     full = Market(df, cfg)
     for t in range(60, 600, 7):
         a, b = full.analyze(t), Market(df.iloc[: t + 1], cfg).analyze(t)
         assert a.support == b.support and a.resistance == b.resistance
         assert a.trendlines == b.trendlines and a.bias == b.bias
+        assert a.htf_bias == b.htf_bias and a.htf_support == b.htf_support and a.htf_resistance == b.htf_resistance
         assert [(o.kind, o.index) for o in a.order_blocks] == [(o.kind, o.index) for o in b.order_blocks]
         assert (a.signal is None) == (b.signal is None)
         if a.signal:
-            assert (a.signal.side, a.signal.stop, a.signal.target) == (b.signal.side, b.signal.stop, b.signal.target)
+            assert (a.signal.side, a.signal.setup, a.signal.stop, a.signal.target) == \
+                (b.signal.side, b.signal.setup, b.signal.stop, b.signal.target)
 
 
 def test_backtest_accounting_and_risk():
@@ -74,3 +110,19 @@ def test_backtest_accounting_and_risk():
             assert -0.0125 * 10_000 * 1.2 < tr.pnl < 0
         sign = 1 if tr.side == "long" else -1
         assert sign * (tr.target - tr.entry) > 0 > sign * (tr.stop - tr.entry)
+
+
+@pytest.mark.parametrize("mode", ["scalp", "swing"])
+def test_modes_run(mode):
+    df = data.synthetic(n=1200, seed=5)
+    cfg = mode_config(mode, htf=12)   # synthetic data is hourly, so use a bar count for the higher timeframe
+    res = run_backtest(df, cfg)
+    assert res.stats["final_equity"] > 0
+
+
+def test_cooldown_spaces_out_trades_after_a_loss():
+    df = data.synthetic(n=1500, seed=3)
+    res = run_backtest(df, StrategyConfig(min_confluence=1, cooldown_bars=10))
+    for prev, nxt in zip(res.trades, res.trades[1:]):
+        if prev.pnl < 0:
+            assert nxt.entry_bar - prev.exit_bar > 10

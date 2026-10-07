@@ -6,7 +6,7 @@ so the strategy can be evaluated bar by bar without looking into the future.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import pandas as pd
@@ -82,7 +82,8 @@ class Trendline:
     p1: float
     i2: int
     p2: float
-    kind: str  # "support" (rising, through lows) | "resistance" (falling, through highs)
+    kind: str                     # "support" (rising, through lows) | "resistance" (falling, through highs)
+    broken_at: int | None = None  # first bar that closed through the line
 
     @property
     def slope(self) -> float:
@@ -94,27 +95,30 @@ class Trendline:
 
 def trendlines(pivots: list[Pivot], closes: np.ndarray, t: int, tolerance: float) -> list[Trendline]:
     """Rising support through the last two swing lows / falling resistance through the
-    last two swing highs, kept only if no close since the first anchor broke the line."""
+    last two swing highs, as known at bar t.
+
+    A line that closes were already beyond between its anchors is discarded. Otherwise
+    ``broken_at`` is the first bar up to t whose close went through the line by more
+    than `tolerance` (None while the line is intact).
+    """
     lines: list[Trendline] = []
     lows = [p for p in pivots if p.kind == "low"][-2:]
     highs = [p for p in pivots if p.kind == "high"][-2:]
     if len(lows) == 2 and lows[1].price > lows[0].price:
-        line = Trendline(lows[0].index, lows[0].price, lows[1].index, lows[1].price, "support")
-        if _intact(line, closes, t, -tolerance):
-            lines.append(line)
+        lines.append(Trendline(lows[0].index, lows[0].price, lows[1].index, lows[1].price, "support"))
     if len(highs) == 2 and highs[1].price < highs[0].price:
-        line = Trendline(highs[0].index, highs[0].price, highs[1].index, highs[1].price, "resistance")
-        if _intact(line, closes, t, tolerance):
-            lines.append(line)
-    return lines
-
-
-def _intact(line: Trendline, closes: np.ndarray, t: int, tolerance: float) -> bool:
-    idx = np.arange(line.i1, t)  # bars before the current one
-    values = line.p1 + line.slope * (idx - line.i1)
-    if line.kind == "support":
-        return bool(np.all(closes[idx] >= values + tolerance))
-    return bool(np.all(closes[idx] <= values + tolerance))
+        lines.append(Trendline(highs[0].index, highs[0].price, highs[1].index, highs[1].price, "resistance"))
+    out = []
+    for line in lines:
+        idx = np.arange(line.i1, t + 1)
+        values = line.p1 + line.slope * (idx - line.i1)
+        crossed = closes[idx] < values - tolerance if line.kind == "support" else closes[idx] > values + tolerance
+        hits = np.nonzero(crossed)[0]
+        if not hits.size:
+            out.append(line)
+        elif idx[hits[0]] > line.i2:
+            out.append(replace(line, broken_at=int(idx[hits[0]])))
+    return out
 
 
 def market_bias(pivots: list[Pivot]) -> str:

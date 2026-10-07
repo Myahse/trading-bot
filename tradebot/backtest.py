@@ -13,6 +13,7 @@ from .strategy import Market, Signal, StrategyConfig
 @dataclass
 class Trade:
     side: str
+    setup: str
     entry_bar: int
     entry: float
     stop: float
@@ -53,6 +54,7 @@ def run_backtest(df: pd.DataFrame, cfg: StrategyConfig | None = None, initial_eq
     equity = np.empty(len(c))
     pos: Trade | None = None
     pending: Signal | None = None
+    cooldown_until = -1   # stand aside after a loss so one level isn't traded over and over
 
     def close(trade: Trade, bar: int, price: float, reason: str) -> None:
         nonlocal cash
@@ -77,9 +79,11 @@ def run_backtest(df: pd.DataFrame, cfg: StrategyConfig | None = None, initial_eq
             elif (h[t] >= pos.target) if long else (l[t] <= pos.target):
                 close(pos, t, pos.target, "target")
             if pos.exit_bar is not None:
+                if pos.pnl < 0:
+                    cooldown_until = t + market.cfg.cooldown_bars
                 pos = None
 
-        if pos is None and pending is None and t < len(c) - 1:
+        if pos is None and pending is None and t > cooldown_until and t < len(c) - 1:
             pending = market.analyze(t).signal
 
         open_pnl = 0.0
@@ -104,7 +108,7 @@ def _open(sig: Signal, t: int, price: float, equity: float, risk: float, leverag
         return None
     per_unit = abs(price - sig.stop)
     size = min(equity * risk / per_unit, equity * leverage / price)
-    return Trade(sig.side, t, float(price), sig.stop, sig.target, size, sig.reasons)
+    return Trade(sig.side, sig.setup, t, float(price), sig.stop, sig.target, size, sig.reasons)
 
 
 def _stats(res: BacktestResult) -> dict:
