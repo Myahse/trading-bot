@@ -546,3 +546,113 @@ def test_gold_on_twenty_dollars_skips_every_setup():
     mm = MoneyManagement.for_symbol("frxXAUUSD", risk_per_trade=0.05, max_daily_loss=None)
     res = run_backtest(df, StrategyConfig(min_confluence=1), mm, initial_equity=20.0)
     assert res.stats["trades"] == 0 and res.stats["skipped_min_lot"] > 0
+
+
+# -- paper trading -------------------------------------------------------------------------
+
+from tradebot.paper import PaperTrader
+
+
+class FakeFeed:
+    """Serves closed candles of a prepared series, revealing more as 'time' passes."""
+
+    def __init__(self, df, revealed):
+        self.df, self.revealed = df.reset_index(drop=True), revealed
+
+    def __call__(self, symbol, interval, count):
+        return self.df.iloc[max(0, self.revealed - count): self.revealed].reset_index(drop=True)
+
+    def advance(self, n):
+        self.revealed = min(len(self.df), self.revealed + n)
+
+
+def _paper(folder, feed, veto=None, risk=0.01):
+    return PaperTrader("V75", "5m", StrategyConfig(min_confluence=1), MoneyManagement(risk_per_trade=risk),
+                       10_000.0, folder, feed, history=1500, screenshots=False, news_veto=veto, log=lambda m: None)
+
+
+def _closed(trades):
+    return [(t.side, t.entry_bar, t.exit_bar, round(t.pnl, 6), t.exit_reason) for t in trades if t.exit_bar is not None]
+
+
+PAPER_DF = data.volatility_index(n=2600, seed=11)
+
+
+def test_paper_trading_matches_the_backtest(tmp_path):
+    feed = FakeFeed(PAPER_DF, 1500)
+    trader = _paper(tmp_path, feed)
+    trader.bootstrap()
+    while feed.revealed < len(PAPER_DF):
+        feed.advance(37)
+        trader.poll()
+    expected = run_backtest(PAPER_DF, StrategyConfig(min_confluence=1), MoneyManagement(risk_per_trade=0.01),
+                            initial_equity=10_000.0, start=1500)
+    assert _closed(trader.engine.trades) and _closed(trader.engine.trades) == _closed(expected.trades)
+    assert all(t.entry_bar >= 1500 for t in trader.engine.trades)   # nothing traded in the warm-up history
+
+
+def test_paper_trading_survives_a_restart(tmp_path):
+    feed = FakeFeed(PAPER_DF, 1500)
+    first = _paper(tmp_path / "a", feed)
+    first.bootstrap()
+    for _ in range(15):
+        feed.advance(37)
+        first.poll()
+    second = _paper(tmp_path / "a", feed)                 # the program was restarted
+    second.bootstrap()
+    while feed.revealed < len(PAPER_DF):
+        feed.advance(37)
+        second.poll()
+
+    feed2 = FakeFeed(PAPER_DF, 1500)
+    straight = _paper(tmp_path / "b", feed2)
+    straight.bootstrap()
+    while feed2.revealed < len(PAPER_DF):
+        feed2.advance(37)
+        straight.poll()
+    assert _closed(second.engine.trades) == _closed(straight.engine.trades)
+    assert second.engine.cash == pytest.approx(straight.engine.cash)
+    events = (tmp_path / "a" / "events.log").read_text().splitlines()
+    assert len(events) == len(straight.engine.events)        # nothing logged twice after the restart
+
+
+def test_paper_refuses_to_resume_with_different_settings(tmp_path):
+    feed = FakeFeed(PAPER_DF, 1500)
+    _paper(tmp_path, feed).bootstrap()
+    with pytest.raises(SystemExit, match="different settings"):
+        _paper(tmp_path, feed, risk=0.05).bootstrap()
+
+
+def test_paper_news_veto_is_replayed_after_restart(tmp_path):
+    feed = FakeFeed(PAPER_DF, 1500)
+    calls = []
+
+    def news(when, signal):           # pretend every setup in the first stretch is next to big news
+        calls.append(when)
+        return "high-impact news" if len(calls) <= 3 else None
+
+    trader = _paper(tmp_path, feed, veto=news)
+    trader.bootstrap()
+    while feed.revealed < len(PAPER_DF):
+        feed.advance(37)
+        trader.poll()
+    skipped = [e for e in trader.engine.events if e["event"] == "skipped"]
+    assert len(skipped) == 3
+
+    again = _paper(tmp_path, feed, veto=lambda when, s: pytest.fail("replay must not ask the news feed"))
+    again.bootstrap()
+    assert _closed(again.engine.trades) == _closed(trader.engine.trades)
+
+
+def test_paper_writes_journal_files(tmp_path):
+    feed = FakeFeed(PAPER_DF, 1500)
+    trader = _paper(tmp_path, feed)
+    trader.bootstrap()
+    while feed.revealed < len(PAPER_DF):
+        feed.advance(100)
+        trader.poll()
+    for name in ("candles.csv", "meta.json", "events.log", "trades.csv", "summary.md"):
+        assert (tmp_path / name).exists()
+    assert len(pd.read_csv(tmp_path / "candles.csv")) == len(PAPER_DF)
+    summary = (tmp_path / "summary.md").read_text()
+    assert "Balance" in summary and "Trades" in summary

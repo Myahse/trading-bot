@@ -4,9 +4,9 @@ A rule-based trading algorithm for **Deriv** markets: volatility indices (V10-V1
 variants), gold and forex (GBP, JPY, USD pairs). It reads candles straight from Deriv's API,
 works out the market structure on two timeframes, decides whether to go long or short,
 waits for confirmation, sizes and manages the position (break-even, partial profit, trailing
-stop, daily loss limit), backtests the rules, watches a market live and prints signals, and
-publishes a **weekly outlook every Sunday and a next-day outlook every evening**.
-It never places orders.
+stop, daily loss limit), backtests the rules, watches a market live and prints signals,
+**paper-trades a virtual account on live candles**, and publishes a **weekly outlook every
+Sunday and a next-day outlook every evening**. It never places orders.
 
 > Educational code, not financial advice. Backtest and paper-trade before risking money.
 
@@ -133,6 +133,41 @@ spreads assumed above and 1:500 leverage assumed:
   5-pip stop (1.5 of 5 pips on GBPUSD), and that is what drains the account.
 - **Risking more** only loses faster.
 - **Aim:** with a small account, aim to prove the signals over weeks, not to grow it in a day.
+
+## Paper trading: a $20 forward test (`tradebot/paper.py`)
+
+Before risking money, let the bot trade a **virtual account on live candles** for a few weeks:
+
+```bash
+python -m tradebot paper --symbol GBPUSD --mode scalp --equity 20 --leverage 500 --spread 0.00015
+python -m tradebot paper --symbol V75 --mode scalp --equity 20 --min-lot 0.001        # check your MT5 spec
+python -m tradebot paper --symbol GBPUSD --mode scalp --equity 20 --leverage 500 --report   # how is it doing?
+```
+
+- **Same rules as the backtest:** it follows the market candle by candle with exactly the
+  backtest's rules, through the same engine (confirmation, real lot sizes, partial profit,
+  break-even, trailing stop, daily limits). The forward test can't quietly behave differently
+  from the backtest.
+- **No orders are sent.** Nothing touches your Deriv account.
+- **News filter (gold and forex):** no new orders within 30 minutes of high-impact news.
+  Turn it off with `--no-news-filter`.
+- **Journal**, in `paper/<symbol>-<interval>/`:
+  - `events.log`: every order placed or cancelled, fill, partial profit, stop move and close
+  - `trades.csv`: every trade
+  - `summary.md`: balance, results by day, open position
+  - `shots/`: a technical screenshot of every order and every closed trade
+- **Restarts are safe.** Stop it with Ctrl+C and run the same command again. It replays the
+  saved candles to rebuild its exact state (open position, balance, limits) and carries on,
+  catching up on candles that closed while it was off.
+- **Same settings when resuming.** Use the same flags as the first run. A run with different
+  settings is refused; `--reset` starts a fresh account.
+- **Prices:** Deriv's are used by default. `--source yahoo` works for gold and forex.
+
+To leave it running on Windows, start it in a terminal that stays open, or as a Task Scheduler task
+"at log on". On Mac/Linux, use `nohup ... &` or a `tmux` session.
+
+Compare the paper results with what a backtest of the same weeks gives. If they match and the
+results hold up over several weeks, the signals are worth a closer look.
 
 ## Screenshots: how the bot read the market
 

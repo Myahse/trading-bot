@@ -79,105 +79,156 @@ class BacktestResult:
                               "reasons": "; ".join(t.reasons)} for t in self.trades])
 
 
+class Engine:
+    """The trading rules, one candle at a time. The backtest and paper trading both drive it,
+    so a forward test can never behave differently from the backtest.
+
+    `step(t)` processes candle t (see the module docstring for the order) and appends what
+    happened to `events`. The market can be replaced by a longer one between steps (paper
+    trading appends candles as they close): indices of past candles must not change.
+    """
+
+    def __init__(self, market: Market, money: MoneyManagement, equity: float, fee_bps: float = 0.0,
+                 spread: float = 0.0, start: int = 0):
+        self.market, self.mm = market, money
+        self.fee, self.spread = fee_bps / 10_000, spread
+        self.start = start                  # no new setups before this candle (paper trading warm-up)
+        self.cash = equity
+        self.trades: list[Trade] = []
+        self.pos: Trade | None = None
+        self.order: Order | None = None
+        self.cooldown_until = -1
+        self.day, self.day_start_cash, self.trades_today = None, equity, 0
+        self.skipped: list[str] = []
+        self.events: list[dict] = []
+        self.veto = None   # optional (bar, signal) -> reason to skip a new setup, e.g. high-impact news
+
+    def _event(self, t: int, kind: str, **info) -> None:
+        self.events.append({"bar": t, "event": kind, **info})
+
+    def _realise(self, trade: Trade, price: float, qty: float) -> float:
+        cost = self.fee * (trade.entry + price) + self.spread   # per unit, per round trip, in quote currency
+        pnl = (trade.sign * (price - trade.entry) - cost) * qty * trade.rate
+        trade.pnl += pnl
+        trade.open_size -= qty
+        self.cash += pnl
+        return pnl
+
+    def close_all(self, t: int, price: float, reason: str) -> None:
+        trade = self.pos
+        self._realise(trade, price, trade.open_size)
+        trade.exit_bar, trade.exit, trade.exit_reason = t, price, reason
+        self._event(t, "closed", side=trade.side, price=price, reason=reason, pnl=trade.pnl,
+                    r=trade.r_multiple, balance=self.cash)
+        if trade.pnl < 0:
+            self.cooldown_until = t + self.market.cfg.cooldown_bars
+        self.pos = None
+
+    def day_of(self, t: int):
+        df = self.market.df
+        return pd.Timestamp(df["time"].iloc[t]).date() if "time" in df.columns else t
+
+    def equity_at(self, t: int) -> float:
+        p = self.pos
+        return self.cash + (p.sign * (self.market.c[t] - p.entry) * p.open_size * p.rate if p is not None else 0.0)
+
+    def step(self, t: int, allow_last: bool = False) -> None:
+        m, mm = self.market, self.mm
+        o, h, l, c, atr = m.o, m.h, m.l, m.c, m.atr
+        day = self.day_of(t)
+        if day != self.day:
+            self.day, self.day_start_cash, self.trades_today = day, self.cash, 0
+
+        # 1. pending order
+        if self.pos is None and self.order is not None:
+            order = self.order
+            fill = _fill(order, t, o, h, l, c)
+            if fill == "cancel" or (fill is None and t >= order.expires and not order.confirmed):
+                self.order = None
+                self._event(t, "order cancelled", side=order.signal.side,
+                            reason="stop level traded first" if fill == "cancel" else "not confirmed in time")
+            elif isinstance(fill, float):
+                pos, why = _open(order.signal, t, fill, self.cash, mm)
+                self.order = None
+                if why:
+                    self.skipped.append(why)
+                if pos is None:
+                    self._event(t, "skipped", side=order.signal.side, reason=why or "price already beyond stop/target")
+                else:
+                    self.pos = pos
+                    self.trades.append(pos)
+                    self.trades_today += 1
+                    self._event(t, "filled", side=pos.side, price=pos.entry, stop=pos.stop, target=pos.target,
+                                lots=pos.lots, units=pos.size, note=why)
+
+        # 2. stop / partial / target
+        if self.pos is not None:
+            pos = self.pos
+            long = pos.side == "long"
+            stop, risk = pos.current_stop, abs(pos.entry - pos.stop)
+            if t > pos.entry_bar and ((o[t] <= stop) if long else (o[t] >= stop)):
+                self.close_all(t, o[t], f"{pos.stop_kind} (gap)")
+            elif (l[t] <= stop) if long else (h[t] >= stop):
+                self.close_all(t, stop, pos.stop_kind)
+            else:
+                if mm.partial_r is not None and mm.partial_pct > 0 and pos.partial_bar is None:
+                    level = pos.entry + pos.sign * mm.partial_r * risk
+                    qty = _partial_qty(pos, mm)
+                    if qty > 0 and ((h[t] >= level) if long else (l[t] <= level)):
+                        pnl = self._realise(pos, level, qty)
+                        pos.partial_bar = t
+                        self._event(t, "partial", side=pos.side, price=level, pnl=pnl, balance=self.cash)
+                if (h[t] >= pos.target) if long else (l[t] <= pos.target):
+                    self.close_all(t, pos.target, "target")
+
+        # 3. move the stop at the close
+        if self.pos is not None:
+            before = (self.pos.current_stop, self.pos.stop_kind)
+            _manage_stop(self.pos, t, h, l, c, atr, m, mm)
+            if (self.pos.current_stop, self.pos.stop_kind) != before:
+                self._event(t, "stop moved", side=self.pos.side, stop=self.pos.current_stop, stop_kind=self.pos.stop_kind)
+
+        # 4. look for a new setup
+        allowed = (mm.max_daily_loss is None or self.cash > self.day_start_cash * (1 - mm.max_daily_loss)) and \
+                  (mm.max_trades_per_day is None or self.trades_today < mm.max_trades_per_day)
+        last_ok = allow_last or t < len(c) - 1
+        if self.pos is None and self.order is None and allowed and t > self.cooldown_until and t >= self.start \
+                and last_ok:
+            sig = m.analyze(t).signal
+            why = self.veto(t, sig) if sig is not None and self.veto is not None else None
+            if why:
+                self._event(t, "skipped", side=sig.side, reason=why)
+            elif sig is not None:
+                self.order = Order(sig, t + (1 if sig.trigger is None else m.cfg.confirm_bars))
+                self._event(t, "order placed", side=sig.side, setup=sig.setup, trigger=sig.trigger,
+                            entry=sig.entry, stop=sig.stop, target=sig.target, rr=sig.rr, reasons=sig.reasons)
+
+
 def run_backtest(df: pd.DataFrame, cfg: StrategyConfig | None = None, money: MoneyManagement | None = None,
                  initial_equity: float = 10_000.0, fee_bps: float = 0.0, spread: float = 0.0,
                  market: Market | None = None, risk_per_trade: float | None = None,
-                 max_leverage: float | None = None) -> BacktestResult:
+                 max_leverage: float | None = None, start: int = 0) -> BacktestResult:
     market = market or Market(df, cfg)
     mm = money or MoneyManagement()
     if risk_per_trade is not None:
         mm.risk_per_trade = risk_per_trade
     if max_leverage is not None:
         mm.max_leverage = max_leverage
-    o, h, l, c, atr = market.o, market.h, market.l, market.c, market.atr
-    n, fee = len(c), fee_bps / 10_000
-    days = pd.to_datetime(market.df["time"], utc=True).dt.date.to_numpy() if "time" in market.df.columns \
-        else np.arange(n)   # without timestamps every bar is its own "day": daily limits are off
-
-    cash = initial_equity
-    trades: list[Trade] = []
+    n = len(market.c)
+    engine = Engine(market, mm, initial_equity, fee_bps, spread, start)
     equity = np.empty(n)
-    pos: Trade | None = None
-    order: Order | None = None
-    cooldown_until = -1
-    day, day_start_cash, trades_today = None, cash, 0
-    skipped: list[str] = []
-
-    def realise(trade: Trade, bar: int, price: float, qty: float) -> None:
-        nonlocal cash
-        cost = fee * (trade.entry + price) + spread   # per unit, per round trip, in quote currency
-        pnl = (trade.sign * (price - trade.entry) - cost) * qty * trade.rate
-        trade.pnl += pnl
-        trade.open_size -= qty
-        cash += pnl
-
-    def close_all(trade: Trade, bar: int, price: float, reason: str) -> None:
-        realise(trade, bar, price, trade.open_size)
-        trade.exit_bar, trade.exit, trade.exit_reason = bar, price, reason
-
     for t in range(n):
-        if days[t] != day:
-            day, day_start_cash, trades_today = days[t], cash, 0
-
-        # 1. pending order
-        if pos is None and order is not None:
-            fill = _fill(order, t, o, h, l, c)
-            if fill == "cancel" or (fill is None and t >= order.expires and not order.confirmed):
-                order = None
-            elif isinstance(fill, float):
-                pos, why = _open(order.signal, t, fill, cash, mm)
-                order = None
-                if why:
-                    skipped.append(why)
-                if pos is not None:
-                    trades.append(pos)
-                    trades_today += 1
-
-        # 2. stop / partial / target
-        if pos is not None:
-            long = pos.side == "long"
-            stop, risk = pos.current_stop, abs(pos.entry - pos.stop)
-            if t > pos.entry_bar and ((o[t] <= stop) if long else (o[t] >= stop)):
-                close_all(pos, t, o[t], f"{pos.stop_kind} (gap)")
-            elif (l[t] <= stop) if long else (h[t] >= stop):
-                close_all(pos, t, stop, pos.stop_kind)
-            else:
-                if mm.partial_r is not None and mm.partial_pct > 0 and pos.partial_bar is None:
-                    level = pos.entry + pos.sign * mm.partial_r * risk
-                    qty = _partial_qty(pos, mm)
-                    if qty > 0 and ((h[t] >= level) if long else (l[t] <= level)):
-                        realise(pos, t, level, qty)
-                        pos.partial_bar = t
-                if (h[t] >= pos.target) if long else (l[t] <= pos.target):
-                    close_all(pos, t, pos.target, "target")
-            if pos.exit_bar is not None:
-                if pos.pnl < 0:
-                    cooldown_until = t + market.cfg.cooldown_bars
-                pos = None
-
-        # 3. move the stop at the close
-        if pos is not None:
-            _manage_stop(pos, t, h, l, c, atr, market, mm)
-
-        # 4. look for a new setup
-        allowed = (mm.max_daily_loss is None or cash > day_start_cash * (1 - mm.max_daily_loss)) and \
-                  (mm.max_trades_per_day is None or trades_today < mm.max_trades_per_day)
-        if pos is None and order is None and allowed and t > cooldown_until and t < n - 1:
-            sig = market.analyze(t).signal
-            if sig is not None:
-                order = Order(sig, t + (1 if sig.trigger is None else market.cfg.confirm_bars))
-
-        equity[t] = cash + (pos.sign * (c[t] - pos.entry) * pos.open_size * pos.rate if pos is not None else 0.0)
-
-    if pos is not None:
-        close_all(pos, n - 1, c[-1], "end of data")
-        equity[-1] = cash
+        engine.step(t)
+        equity[t] = engine.equity_at(t)
+    if engine.pos is not None:
+        engine.close_all(n - 1, market.c[-1], "end of data")
+        equity[-1] = engine.cash
 
     index = market.df["time"] if "time" in market.df.columns else market.df.index
-    result = BacktestResult(trades, pd.Series(equity, index=index), initial_equity)
+    result = BacktestResult(engine.trades, pd.Series(equity, index=index), initial_equity)
     result.stats = _stats(result)
-    result.stats["skipped_min_lot"] = sum(w.startswith("skipped") for w in skipped)
-    result.stats["at_min_lot"] = sum(w.startswith("minimum lot") for w in skipped)
+    result.stats["skipped_min_lot"] = sum(w.startswith("skipped") for w in engine.skipped)
+    result.stats["at_min_lot"] = sum(w.startswith("minimum lot") for w in engine.skipped)
     return result
 
 

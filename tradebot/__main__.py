@@ -6,6 +6,8 @@
   python -m tradebot outlook  --symbol XAUUSD,GBPJPY,V75 --horizon week|day
   python -m tradebot schedule --symbol XAUUSD,GBPJPY,V75 --at 18:00
                               weekly outlook every Sunday, next-day outlook every evening
+  python -m tradebot paper    --symbol GBPUSD --mode scalp --equity 20 --leverage 500 --spread 0.00015
+                              forward-test on live candles with a virtual account (no orders sent)
 """
 
 from __future__ import annotations
@@ -15,6 +17,8 @@ import datetime as dt
 import re
 import time
 from pathlib import Path
+
+import pandas as pd
 
 from . import data
 from .backtest import run_backtest
@@ -33,7 +37,7 @@ def _r_or_off(value: str) -> float | None:
 
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="tradebot", description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
-    p.add_argument("command", choices=["analyze", "backtest", "watch", "outlook", "schedule"])
+    p.add_argument("command", choices=["analyze", "backtest", "watch", "outlook", "schedule", "paper"])
     p.add_argument("--mode", choices=sorted(MODES), help="scalp (5m, 1h structure) or swing (4h, daily structure)")
 
     g = p.add_argument_group("market data")
@@ -93,6 +97,14 @@ def _parser() -> argparse.ArgumentParser:
     g.add_argument("--horizon", choices=["day", "week"], default="day", help="outlook period")
     g.add_argument("--out", default="reports", help="folder for outlook reports and charts")
     g.add_argument("--at", default="18:00", help="schedule: local time to publish outlooks")
+
+    g = p.add_argument_group("paper trading")
+    g.add_argument("--folder", help="paper account folder (default paper/<symbol>-<interval>)")
+    g.add_argument("--reset", action="store_true", help="delete the paper account and start fresh")
+    g.add_argument("--report", action="store_true", help="print the paper account summary and exit")
+    g.add_argument("--no-news-filter", action="store_true",
+                   help="paper: allow new orders within 30 minutes of high-impact news")
+    g.add_argument("--no-screenshots", action="store_true", help="paper: don't save a chart per order/trade")
     return p
 
 
@@ -327,6 +339,63 @@ def _watch(args, money: MoneyManagement) -> None:
         time.sleep(step - time.time() % step + 2)   # just after the next candle closes
 
 
+def _live_feed(args):
+    """Closed candles for paper trading: Deriv by default, Yahoo for gold/forex."""
+    step = data.DERIV_GRANULARITY[args.interval]
+
+    def feed(symbol: str, interval: str, count: int):
+        if args.source == "deriv":
+            return data.load_deriv(symbol, interval, count, args.app_id)
+        if args.source == "yahoo":
+            period = "60d" if step < 3600 else "730d"
+            df = data.load_yahoo(symbol, interval, period)
+            closed = df[df.time + pd.Timedelta(seconds=step) <= pd.Timestamp.now(tz="UTC")]   # drop the forming one
+            return closed.tail(count).reset_index(drop=True)
+        raise SystemExit("paper trading needs live prices: --source deriv (or yahoo for gold/forex)")
+    return feed, step
+
+
+def _news_veto(args):
+    """No new orders within 30 minutes of high-impact news for the symbol's currencies."""
+    sym = data.deriv_symbol(args.symbol)
+    if args.no_news_filter or fund.currencies(sym) is None:
+        return None
+    cache = {"at": 0.0, "events": []}
+
+    def veto(when, signal):
+        if time.time() - cache["at"] > 6 * 3600:   # refresh the calendar a few times a day
+            try:
+                cache["events"], cache["at"] = fund.fetch_calendar(), time.time()
+            except Exception as exc:
+                print(f"note: calendar unavailable ({exc.__class__.__name__}) - news filter paused")
+                cache["at"] = time.time() - 5 * 3600   # retry within the hour
+        soon = fund.events_soon(cache["events"], sym, when.to_pydatetime(), minutes=30)
+        return f"high-impact news: {', '.join(f'{e.currency} {e.title} {e.when:%H:%M} UTC' for e in soon)}" \
+            if soon else None
+    return veto
+
+
+def _paper(args, money: MoneyManagement) -> None:
+    import shutil
+    from .paper import PaperTrader
+    folder = Path(args.folder or f"paper/{re.sub(r'[^A-Za-z0-9]+', '', args.symbol)}-{args.interval}")
+    if args.report:
+        path = folder / "summary.md"
+        print(path.read_text() if path.exists() else f"no paper account in {folder}")
+        return
+    if args.reset and folder.exists():
+        shutil.rmtree(folder)
+        print(f"deleted {folder}")
+    if args.spread == 0 and args.fee_bps == 0:
+        print("note: no trading costs set - pass --spread from your MT5 symbol specification")
+    feed, step = _live_feed(args)
+    trader = PaperTrader(args.symbol, args.interval, _config(args), money, args.equity, folder, feed,
+                         spread=args.spread, fee_bps=args.fee_bps, step_seconds=step,
+                         screenshots=not args.no_screenshots, news_veto=_news_veto(args))
+    print("paper trading - virtual account, no orders are sent. Ctrl+C to stop; run again to resume.")
+    trader.run()
+
+
 def _symbols(args) -> list[str]:
     return [s.strip() for s in args.symbol.split(",") if s.strip()]
 
@@ -425,6 +494,9 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.command == "watch":
         _watch(args, money)
+        return
+    if args.command == "paper":
+        _paper(args, money)
         return
 
     market = Market(_load(args), _config(args))
