@@ -37,7 +37,7 @@ def _r_or_off(value: str) -> float | None:
 
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="tradebot", description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
-    p.add_argument("command", choices=["analyze", "backtest", "watch", "outlook", "schedule", "paper"])
+    p.add_argument("command", choices=["analyze", "backtest", "watch", "outlook", "schedule", "paper", "download"])
     p.add_argument("--mode", choices=sorted(MODES), help="scalp (5m, 1h structure) or swing (4h, daily structure)")
 
     g = p.add_argument_group("market data")
@@ -396,6 +396,19 @@ def _paper(args, money: MoneyManagement) -> None:
     trader.run()
 
 
+def _download(args) -> None:
+    """Save candles to data/<symbol>-<interval>.csv (comma-separated symbols allowed), for backtests
+    with --csv or to share with someone who can't reach Deriv."""
+    out = Path("data")
+    out.mkdir(exist_ok=True)
+    for symbol in _symbols(args):
+        df = _load(args, symbol)
+        path = out / f"{re.sub(r'[^A-Za-z0-9]+', '', symbol)}-{args.interval}.csv"
+        df.to_csv(path, index=False)
+        print(f"{symbol}: {len(df)} candles, {df.time.iloc[0]:%Y-%m-%d %H:%M} to {df.time.iloc[-1]:%Y-%m-%d %H:%M} "
+              f"UTC -> {path}")
+
+
 def _symbols(args) -> list[str]:
     return [s.strip() for s in args.symbol.split(",") if s.strip()]
 
@@ -497,6 +510,9 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.command == "paper":
         _paper(args, money)
+        return
+    if args.command == "download":
+        _download(args)
         return
 
     market = Market(_load(args), _config(args))
