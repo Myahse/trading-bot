@@ -15,7 +15,12 @@ Both need the trend filter to agree: the higher-timeframe structure when one is 
 (fractal top-down), otherwise the entry timeframe's own swings. The stop goes beyond
 the structure that was used; the target is the nearest opposing obstacle (zone,
 order block or trendline on either timeframe), or `default_rr` x risk when nothing
-is in the way. Trades below `min_rr` are skipped. Orders fill at the next bar's open.
+is in the way. Trades below `min_rr` are skipped.
+
+Confirmation (`confirmation`): by default a setup is only entered once price breaks the
+signal candle's high (long) / low (short) within `confirm_bars` bars - a buy/sell stop.
+"close" waits for a candle to close beyond that level and enters at the next open;
+"none" enters at the next open straight away.
 """
 
 from __future__ import annotations
@@ -36,6 +41,7 @@ class StrategyConfig:
     pivot_right: int = 5
     atr_period: int = 14
     zone_tolerance_atr: float = 0.6     # pivots within this many ATRs form one zone
+    htf_zone_tolerance_atr: float = 0.3 # the same on the higher timeframe (its ATR is much bigger)
     zone_min_touches: int = 2
     zone_lookback_pivots: int = 40      # only the most recent pivots build zones
     touch_buffer_atr: float = 0.25      # how close counts as "tagging" a level
@@ -53,22 +59,38 @@ class StrategyConfig:
     breakout_body: float = 0.5          # breakout candle body as a fraction of its range
     retest_window: int = 20             # bars after a trendline break during which a retest counts
     cooldown_bars: int = 0              # bars to stand aside after a losing trade
+    confirmation: str = "break"         # "break": enter when price breaks the signal candle's high (long)
+                                        # "close": enter after a candle closes beyond it
+                                        # "none": enter at the next open
+    confirm_bars: int = 3               # bars the confirmation may take before the setup is cancelled
 
 
 MODES: dict[str, dict] = {
     # 5m entries (1m-15m all work), direction and big levels from the hourly chart.
-    "scalp": dict(interval="5m", count=20_000, period="60d", risk=0.005, config=dict(
-        htf="1h", pivot_left=3, pivot_right=3, htf_pivot=3, zone_lookback_pivots=30, ob_max_age=100,
-        min_rr=1.5, default_rr=1.5, retest_window=12, cooldown_bars=6, min_stop_atr=1.0)),
+    "scalp": dict(interval="5m", count=20_000, period="60d",
+                  config=dict(htf="1h", pivot_left=3, pivot_right=3, htf_pivot=3, zone_lookback_pivots=30,
+                              ob_max_age=100, min_rr=1.5, default_rr=1.5, retest_window=12, cooldown_bars=6,
+                              min_stop_atr=1.0, confirmation="break", confirm_bars=3),
+                  money=dict(risk_per_trade=0.005, breakeven_r=1.0, partial_r=1.0, partial_pct=0.5,
+                             trail="atr", trail_start_r=1.0, trail_atr=1.5, max_daily_loss=0.03,
+                             max_trades_per_day=8)),
     # 4h entries, direction and big levels from the daily chart.
-    "swing": dict(interval="4h", count=5_000, period="730d", risk=0.01, config=dict(
-        htf="D", pivot_left=5, pivot_right=5, htf_pivot=3, zone_lookback_pivots=40, ob_max_age=150,
-        min_rr=2.0, default_rr=2.5, retest_window=15, cooldown_bars=3)),
+    "swing": dict(interval="4h", count=5_000, period="730d",
+                  config=dict(htf="D", pivot_left=5, pivot_right=5, htf_pivot=3, zone_lookback_pivots=40,
+                              ob_max_age=150, min_rr=2.0, default_rr=2.5, retest_window=15, cooldown_bars=3,
+                              confirmation="break", confirm_bars=2),
+                  money=dict(risk_per_trade=0.01, breakeven_r=1.0, partial_r=1.5, partial_pct=0.5,
+                             trail="swing", trail_start_r=1.5, max_daily_loss=None)),
 }
 
 
 def mode_config(mode: str, **overrides) -> StrategyConfig:
     return StrategyConfig(**{**MODES[mode]["config"], **overrides})
+
+
+def mode_money(mode: str, **overrides):
+    from .money import MoneyManagement
+    return MoneyManagement(**{**MODES[mode]["money"], **overrides})
 
 
 @dataclass
@@ -80,6 +102,8 @@ class Signal:
     stop: float
     target: float
     reasons: list[str] = field(default_factory=list)
+    trigger: float | None = None   # level price must break/close beyond to confirm (None: no confirmation)
+    confirmation: str = "none"
 
     @property
     def rr(self) -> float:
@@ -145,7 +169,7 @@ class Market:
             lines += self.htf_lines.lines_at(t, hp, int(cfg.retest_window * self.htf.bars_per_candle))
             ha = self.htf.atr_known_at(t)
             if not np.isnan(ha):
-                htf_zones = sr_zones(hp[-cfg.zone_lookback_pivots:], cfg.zone_tolerance_atr * ha, 2)
+                htf_zones = sr_zones(hp[-cfg.zone_lookback_pivots:], cfg.htf_zone_tolerance_atr * ha, 2)
 
         def split(zs):
             return (sorted((z for z in zs if z.mid < c), key=lambda z: -z.mid),
@@ -257,8 +281,13 @@ class Market:
                           and (v := line.value_at(t)) < c]
             target = max(obstacles) if obstacles else c - self.cfg.default_rr * (stop - c)
         trend = f"HTF bias {an.htf_bias}" if an.htf_bias is not None else f"bias {an.bias}"
-        signal = Signal(side, setup, t, float(c), float(stop), float(target), reasons + [trend])
-        return signal if signal.rr >= self.cfg.min_rr else None
+        confirm = self.cfg.confirmation
+        trigger = None if confirm == "none" else float(self.h[t] if side == "long" else self.l[t])
+        # With confirmation the fill is at (or beyond) the trigger, so judge reward:risk from there.
+        entry = float(c) if trigger is None else trigger
+        signal = Signal(side, setup, t, entry, float(stop), float(target), reasons + [trend], trigger, confirm)
+        beyond_target = (entry >= target) if side == "long" else (entry <= target)
+        return signal if not beyond_target and signal.rr >= self.cfg.min_rr else None
 
 
 def _tf(line: Trendline) -> str:

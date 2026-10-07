@@ -3,7 +3,10 @@
 A rule-based trading algorithm for **Deriv** markets: volatility indices (V10-V100, 1s
 variants), gold and forex (GBP, JPY, USD pairs). It reads candles straight from Deriv's API,
 works out the market structure on two timeframes, decides whether to go long or short,
-backtests the rules, and can watch a market live and print signals. It never places orders.
+waits for confirmation, sizes and manages the position (break-even, partial profit, trailing
+stop, daily loss limit), backtests the rules, watches a market live and prints signals, and
+publishes a **weekly outlook every Sunday and a next-day outlook every evening**.
+It never places orders.
 
 > Educational code, not financial advice. Backtest and paper-trade before risking money.
 
@@ -14,11 +17,16 @@ backtests the rules, and can watch a market live and print signals. It never pla
 | Entry candles | 5m (1m-15m all work) | 4h |
 | Structure / trend from | 1h candles | daily candles |
 | Swing size | 3 bars each side | 5 bars each side |
-| Risk per trade | 0.5% | 1% |
 | Minimum reward:risk | 1.5 | 2.0 |
+| Confirmation | break of the signal candle within 3 candles | break within 2 candles |
+| Risk per trade | 0.5% | 1% |
+| Partial profit | 50% at +1R | 50% at +1.5R |
+| Break-even | at +1R | at +1R |
+| Trailing stop | 1.5 ATR behind the best price, from +1R | behind each new swing, from +1.5R |
+| Daily limits | stop after -3% or 8 trades | - |
 | Stand aside after a loss | 6 bars | 3 bars |
 
-Any flag overrides the preset, e.g. `--mode scalp --interval 1m --htf 15min`.
+Any flag overrides the preset, e.g. `--mode scalp --interval 1m --htf 15min --trail swing`.
 
 ## What it looks at
 
@@ -37,7 +45,7 @@ is used only after it has closed.
 
 ## Entry rules (`tradebot/strategy.py`)
 
-Two setups (longs shown; shorts are the mirror). Both are evaluated on each candle close and fill at the next open.
+Two setups (longs shown; shorts are the mirror). Both are evaluated on each candle close.
 
 **1. Rejection.** Price tags at least **2** of:
 - a support zone
@@ -56,7 +64,71 @@ For both setups:
 - The target is the nearest thing in the way on either timeframe: a resistance zone, a bearish OB or a falling trendline. With nothing in the way it is `default_rr` x risk.
 - The trade is skipped if reward:risk is below `min_rr`.
 
-The backtest charges `--fee-bps` per side. When one bar hits both the stop and the target, it assumes the stop was hit first.
+### Confirmation (`--confirm`)
+
+A setup is not entered straight away:
+- **`break`** (default): a buy-stop is placed at the signal candle's high (sell-stop at the low).
+  It fills only if price breaks that level within `--confirm-bars` candles. It is cancelled if
+  price reaches the stop level first.
+- **`close`**: the bot waits for a candle to close beyond the signal candle's high/low, then
+  enters at the next open.
+- **`none`**: enter at the next open.
+
+Reward:risk is measured from the confirmation level, not from the signal candle's close.
+
+## Money management (`tradebot/money.py`)
+
+- **Size:** the position is sized so that hitting the initial stop loses `--risk` of the account
+  (scalp 0.5%, swing 1%), capped at `--leverage` x the account (default 30).
+- **Lots:** signals print the lot size, using Deriv MT5 contract sizes (forex 100,000, gold 100,
+  indices 1; override with `--contract-size`). For JPY crosses such as GBPJPY, pass `--quote-rate`
+  (the USD value of 1 JPY).
+- **Partial profit:** `--partial-pct` of the position is closed at `--partial` R.
+- **Break-even:** the stop moves to entry at `--breakeven` R.
+- **Trailing stop:** from `--trail-start` R the stop follows price:
+  - `--trail atr`: `--trail-atr` x ATR behind the best price
+  - `--trail swing`: just beyond each new swing low (long) / high (short)
+
+  The stop only ever tightens.
+- **Daily limits:** no new trades for the rest of the day after losing `--daily-loss` of the
+  account, or after `--max-trades-day` trades.
+- Any rule can be turned off, e.g. `--breakeven off --partial off --trail none --daily-loss off`.
+
+The backtest moves stops only at candle closes, so it never assumes the order of prices inside
+a candle. When one candle touches both the stop and the target, it assumes the stop came first.
+
+## Outlooks: Sunday for the week, every evening for the next day (`tradebot/outlook.py`)
+
+For each market the report gives:
+- the trend on the higher timeframe (daily for the next-day outlook, weekly for the week)
+- the typical range (ATR) and classic pivot points
+- the key levels above and below price: zones, trendlines projected to the end of the period,
+  order blocks and pivots. Where they cluster they are merged and marked **confluence**.
+- a main scenario (with the trend) and an alternative
+- the trendline breaks and retests to watch, and any live setup
+
+Each report is saved as Markdown with a chart per market.
+
+```bash
+python -m tradebot outlook --symbol XAUUSD,GBPJPY,USDJPY,V75 --horizon week   # Sunday
+python -m tradebot outlook --symbol XAUUSD,GBPJPY,USDJPY,V75 --horizon day    # each evening
+python -m tradebot schedule --symbol XAUUSD,GBPJPY,USDJPY,V75 --at 18:00     # leave running: does both
+```
+
+`schedule` publishes the weekly outlook every Sunday at `--at` (local time) and a next-day
+outlook every evening. Forex and gold are skipped when the next day is Saturday or Sunday;
+volatility indices are included every day. Reports go to `reports/` (change with `--out`).
+
+To run it without leaving a terminal open:
+
+```bash
+# Mac / Linux: crontab -e
+55 17 * * 0   cd /path/to/trading-bot && python -m tradebot outlook --symbol XAUUSD,GBPJPY,V75 --horizon week
+55 17 * * 0-4 cd /path/to/trading-bot && python -m tradebot outlook --symbol XAUUSD,GBPJPY,V75 --horizon day
+```
+
+On Windows, create two tasks in Task Scheduler that run the same commands with the working
+folder set to `trading-bot`: weekly on Sunday, and daily Sunday to Thursday.
 
 ## Clean chart
 
@@ -83,6 +155,7 @@ python -m tradebot analyze  --mode scalp --symbol V75            # what the bot 
 python -m tradebot analyze  --mode swing --symbol XAUUSD
 python -m tradebot backtest --mode scalp --symbol GBPJPY --spread 0.03 --plot chart.png --trades trades.csv
 python -m tradebot watch    --mode scalp --symbol "V75(1s)"      # live: prints a signal at each candle close
+python -m tradebot schedule --symbol XAUUSD,GBPJPY,V75 --at 18:00 # outlooks: Sunday + every evening
 ```
 
 Symbols are written the way you see them on Deriv: `V10`, `V25`, `V50`, `V75`, `V100`, the 1-second
@@ -104,39 +177,47 @@ From Python:
 ```python
 from tradebot import analyze, run_backtest
 from tradebot.data import load_deriv
-from tradebot.strategy import mode_config
+from tradebot.strategy import mode_config, mode_money
 
 df = load_deriv("XAUUSD", "5m", count=20_000)
-signal = analyze(df, mode_config("scalp")).signal     # None, or side/setup/entry/stop/target/reasons
-print(run_backtest(df, mode_config("scalp"), risk_per_trade=0.005, spread=0.3).stats)
+signal = analyze(df, mode_config("scalp")).signal     # None, or side/setup/trigger/stop/target/reasons
+print(run_backtest(df, mode_config("scalp"), mode_money("scalp"), spread=0.3).stats)
 ```
 
 ## Backtest results so far
 
-These runs used gold and forex from Yahoo, plus simulated V75. Deriv's own data could not be
-reached from the environment this was built in. The spreads are **my assumptions, not Deriv's
-figures**: XAUUSD 0.30, GBPJPY 0.03, USDJPY 0.015, GBPUSD 0.00015.
+These runs used gold and forex from Yahoo (60 days of 5m for scalp, 2 years of 4h for swing).
+Deriv's own data could not be reached from the environment this was built in. The spreads
+are **my assumptions, not Deriv's figures**: XAUUSD 0.30, GBPJPY 0.03, USDJPY 0.015,
+GBPUSD 0.00015.
 
-| Mode | Market | Trades | Profit factor (no spread) | Profit factor (with spread) | Return (with spread) |
-|---|---|---|---|---|---|
-| scalp 5m / 60 days | XAUUSD | 130 | 0.95 | 0.90 | -1.8% |
-| scalp | GBPJPY | 121 | 0.97 | 0.72 | -1.8% |
-| scalp | USDJPY | 106 | 1.03 | 0.88 | -0.8% |
-| scalp | GBPUSD | 152 | 1.07 | 0.68 | -1.5% |
-| scalp | V75 (simulated, 3 runs) | ~185 | 0.83-0.88 | - | -7% to -10% |
-| swing 4h / 2 years | XAUUSD | 28 | 1.59 | 1.57 | +8.9% |
-| swing | GBPJPY | 39 | 0.31 | 0.29 | -10.2% |
-| swing | USDJPY | 30 | 0.94 | 0.92 | -0.9% |
-| swing | GBPUSD | 27 | 0.60 | 0.57 | -4.3% |
-| swing | V75 (simulated, 3 runs) | 25-44 | 0.54-1.05 | - | -15% to +1% |
+"Old" enters at the next open with a fixed stop and target. "New" uses the presets above
+(confirmation and money management).
+
+| Mode | Market | Old: trades / win % / profit factor / return | New: trades / win % / profit factor / return |
+|---|---|---|---|
+| scalp | XAUUSD | 133 / 35% / 0.94 / -2.8% | 70 / 51% / 0.93 / -1.2% |
+| scalp | GBPJPY | 96 / 26% / 0.84 / -7.5% | 72 / 40% / 0.35 / -16.2% |
+| scalp | USDJPY | 119 / 32% / 0.56 / -18.5% | 56 / 48% / 0.71 / -4.5% |
+| scalp | GBPUSD | 170 / 31% / 0.51 / -33.0% | 147 / 47% / 0.44 / -25.0% |
+| swing | XAUUSD | 28 / 36% / 1.42 / +7.6% | 20 / 45% / 1.17 / +1.8% |
+| swing | GBPJPY | 46 / 15% / 0.42 / -21.5% | 25 / 28% / 0.76 / -3.2% |
+| swing | USDJPY | 41 / 20% / 0.58 / -13.8% | 26 / 23% / 0.52 / -9.1% |
+| swing | GBPUSD | 38 / 29% / 0.86 / -3.7% | 32 / 31% / 0.58 / -8.7% |
 
 Read these honestly:
-- Apart from swing on gold, the rules show **no edge yet**, and the spread turns break-even scalps into losses.
-- 28 trades on gold is too few to trust on its own.
-- **Volatility indices are random by design.** Deriv generates them with a fixed volatility and no
-  memory, so support, resistance and trendlines cannot predict them in the long run. Any
-  backtest edge there is luck, and the spread is a guaranteed cost. Use V-indices to practise
+- **Confirmation** filters out about half the trades and usually cuts losses. It does not
+  create an edge.
+- **Money management** raises the win rate to 40-50%, but taking half off at 1R and moving to
+  break-even trims winners as much as it saves losers. Expectancy barely moves.
+- **Forex scalping loses after spreads.** Only gold comes close to break-even on 5m candles.
+  Swing on gold is the only positive line, and on 20-28 trades that is not proof.
+- **Volatility indices are random by design.** Deriv generates them with a fixed volatility and
+  no memory, so support, resistance and trendlines cannot predict them in the long run. Any
+  backtest edge there is luck, and the spread is a guaranteed cost. Use them to practise
   execution, not to expect a statistical edge.
+- Run your own backtests on Deriv data with your real spreads before trusting any of this,
+  and paper-trade on a demo account first.
 
 ## Tests
 

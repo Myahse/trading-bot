@@ -3,9 +3,11 @@ import pandas as pd
 import pytest
 
 from tradebot import data
-from tradebot.backtest import run_backtest
+from tradebot.backtest import Order, _fill, run_backtest
+from tradebot.strategy import Signal
 from tradebot.orderblocks import find_order_blocks
 from tradebot.fractal import HigherTimeframe
+from tradebot.money import MoneyManagement, lots, quote_rate
 from tradebot.strategy import Market, StrategyConfig, mode_config
 from tradebot.structure import Pivot, Trendline, TrendlineFinder, find_pivots, sr_zones
 
@@ -204,8 +206,9 @@ def test_deriv_symbol_names(name, symbol):
 
 def test_spread_is_charged_once_per_round_trip():
     df = data.volatility_index(n=3000, seed=4)
-    free = run_backtest(df, StrategyConfig(min_confluence=1))
-    costly = run_backtest(df, StrategyConfig(min_confluence=1), spread=50.0)
+    mm = lambda: MoneyManagement(max_daily_loss=None)   # noqa: E731  (the daily limit depends on costs)
+    free = run_backtest(df, StrategyConfig(min_confluence=1), mm())
+    costly = run_backtest(df, StrategyConfig(min_confluence=1), mm(), spread=50.0)
     assert free.trades and len(free.trades) == len(costly.trades)
     t0, t1 = free.trades[0], costly.trades[0]
     assert t1.pnl == pytest.approx(t0.pnl - 50.0 * t0.size)
@@ -217,3 +220,158 @@ def test_swings_after_a_break_do_not_count_as_touches():
     swings = SWINGS + [Pivot(35, 17.0, "low", 38)]
     broken = [ln for ln in _finder(lows).lines_at(39, swings, retest_window=10) if ln.broken_at is not None]
     assert broken[0].touches == (0, 10, 20)
+
+
+
+# -- confirmation ----------------------------------------------------------------
+
+def _order(confirmation, trigger=10.0, stop=8.0):
+    return Order(Signal("long", "rejection", 0, trigger, stop, 14.0, [], trigger, confirmation), expires=3)
+
+
+def _bars(*rows):
+    o, h, l, c = (np.array(col, float) for col in zip(*rows))
+    return o, h, l, c
+
+
+def test_break_confirmation_fills_at_the_trigger_only_when_price_breaks_it():
+    o, h, l, c = _bars((9.5, 9.9, 9.2, 9.6), (9.6, 10.4, 9.5, 10.2))
+    order = _order("break")
+    assert _fill(order, 0, o, h, l, c) is None           # high 9.9 < trigger 10: keep waiting
+    assert _fill(order, 1, o, h, l, c) == 10.0           # broke it: buy-stop filled at 10
+
+
+def test_break_confirmation_is_cancelled_if_the_stop_trades_first():
+    o, h, l, c = _bars((9.5, 9.7, 7.9, 8.2))
+    assert _fill(_order("break"), 0, o, h, l, c) == "cancel"
+
+
+def test_close_confirmation_enters_on_the_next_open():
+    o, h, l, c = _bars((9.5, 10.5, 9.4, 9.9), (9.9, 10.6, 9.8, 10.3), (10.4, 10.8, 10.2, 10.6))
+    order = _order("close")
+    assert _fill(order, 0, o, h, l, c) is None           # traded above 10 but closed below: not confirmed
+    assert _fill(order, 1, o, h, l, c) is None and order.confirmed
+    assert _fill(order, 2, o, h, l, c) == 10.4
+
+
+def test_confirmation_never_enters_before_the_trigger():
+    df = data.volatility_index(n=3000, seed=4)
+    cfg = StrategyConfig(min_confluence=1, confirmation="break", confirm_bars=3)
+    res = run_backtest(df, cfg)
+    h, l = df.high.to_numpy(), df.low.to_numpy()
+    assert res.trades
+    for tr in res.trades:
+        recent = slice(max(0, tr.entry_bar - 3), tr.entry_bar)   # the signal candle is one of these
+        if tr.side == "long":
+            assert tr.entry >= h[recent].min() - 1e-9
+        else:
+            assert tr.entry <= l[recent].max() + 1e-9
+
+
+# -- money management ------------------------------------------------------------
+
+def _trending(n=60, step=1.0):
+    """A clean rally: each candle 1 point higher."""
+    close = 100 + step * np.arange(n)
+    return candles([(c - step, c + 0.2, c - step - 0.2, c) for c in close])
+
+
+class OneLong(Market):
+    """Market that signals one long on bar 20 (stop 2 points away, target far) and nothing else."""
+
+    def analyze(self, t):
+        an = super().analyze(t)
+        an.signal = Signal("long", "rejection", t, self.c[t], self.c[t] - 2, self.c[t] + 100) if t == 20 else None
+        return an
+
+
+def test_breakeven_partial_and_trailing_stop():
+    df = _trending()
+    falls = df.copy()
+    falls.loc[30:, ["open", "high", "low", "close"]] = falls.loc[29, "close"] - np.arange(1, 31)[:, None] * 0.7
+    cfg = StrategyConfig(confirmation="none", trend_filter=False)
+    mm = MoneyManagement(breakeven_r=1.0, partial_r=1.0, partial_pct=0.5, trail="atr", trail_atr=2.0,
+                         max_daily_loss=None)
+    res = run_backtest(falls, cfg, mm, market=OneLong(falls, cfg))
+    (tr,) = res.trades
+    assert tr.partial_bar is not None                     # half off at +1R
+    assert tr.exit_reason.startswith("trailing stop")
+    assert tr.exit > tr.entry + 2                         # trailed well past break-even before the drop
+    assert tr.r_multiple > 1
+
+
+def test_daily_loss_limit_stops_new_trades_for_the_day():
+    df = data.volatility_index(n=4000, seed=6, bar_seconds=60)
+    loose = run_backtest(df, StrategyConfig(min_confluence=1), MoneyManagement(max_daily_loss=None))
+    tight = run_backtest(df, StrategyConfig(min_confluence=1), MoneyManagement(max_daily_loss=0.01))
+    assert len(tight.trades) < len(loose.trades)
+
+
+def test_max_trades_per_day():
+    df = data.volatility_index(n=4000, seed=6, bar_seconds=60)
+    res = run_backtest(df, StrategyConfig(min_confluence=1), MoneyManagement(max_trades_per_day=2,
+                                                                              max_daily_loss=None))
+    days = pd.Series([df.time[t.entry_bar].date() for t in res.trades])
+    assert days.value_counts().max() <= 2
+
+
+def test_lot_size():
+    # 1% of 10,000 = $100 at risk; gold stop $5 away, 100 oz per lot -> $500 per lot -> 0.2 lots
+    assert lots(10_000, 0.01, 2400.0, 2395.0, 100) == pytest.approx(0.2)
+    assert quote_rate("frxUSDJPY", 150.0) == pytest.approx(1 / 150)
+    assert quote_rate("frxGBPJPY", 190.0) is None and quote_rate("R_75", 1e5) == 1.0
+
+
+# -- outlooks ----------------------------------------------------------------------
+
+def test_outlook_levels_scenarios_and_report(tmp_path):
+    from tradebot.outlook import build_outlook, to_markdown
+    df = data.volatility_index(n=2000, bar_seconds=3600, seed=3)
+    o = build_outlook(df, "V75", "day")
+    assert o.above and o.below
+    assert all(lv.mid > o.price for lv in o.above) and all(lv.mid < o.price for lv in o.below)
+    assert [lv.mid for lv in o.above] == sorted(lv.mid for lv in o.above)
+    assert o.pivots["S1"] < o.pivots["P"] < o.pivots["R1"]
+    assert len(o.scenarios) == 2 and o.expected_range > 0
+    md = to_markdown([o], "day")
+    assert "## V75" in md and "Pivots" in md and "Scenarios" in md
+
+
+def test_confluence_levels_do_not_chain_into_wide_bands():
+    from tradebot.outlook import Level, _merge
+    levels = [Level(p, p, [f"l{p}"]) for p in (100.0, 100.8, 101.6, 102.4, 103.2)]   # 0.8 apart
+    merged = _merge(levels, gap=1.0)
+    assert [len(lv.labels) for lv in merged] == [2, 2, 1]
+    assert max(lv.high - lv.low for lv in merged) <= 1.0
+
+
+@pytest.mark.parametrize("day, expected", [
+    ("2026-10-11", [("week", ["XAUUSD", "V75"]), ("day", ["XAUUSD", "V75"])]),   # Sunday
+    ("2026-10-07", [("day", ["XAUUSD", "V75"])]),                                  # Wednesday
+    ("2026-10-09", [("day", ["V75"])]),                                            # Friday: no forex Saturday
+    ("2026-10-10", [("day", ["V75"])]),                                            # Saturday
+])
+def test_schedule_publishes_weekly_on_sunday_and_skips_forex_weekends(day, expected):
+    import datetime as dt
+    from tradebot.__main__ import outlooks_due
+    run = dt.datetime.fromisoformat(day + "T18:00")
+    assert outlooks_due(run, ["XAUUSD", "V75"]) == expected
+
+
+def test_outlook_command_writes_report_and_charts(tmp_path):
+    from tradebot.__main__ import main
+    main(["outlook", "--source", "sim", "--symbol", "V75,V25", "--horizon", "week", "--out", str(tmp_path)])
+    files = sorted(p.name for p in tmp_path.iterdir())
+    assert any(f.startswith("outlook-week-") and f.endswith(".md") for f in files)
+    assert sum(f.endswith(".png") for f in files) == 2
+
+
+def test_an_intact_twin_of_a_broken_line_is_dropped():
+    lows = _lows()
+    lows[30] = 15.85                              # swing low just under the 0-10-20 line (16.0 there)...
+    closes = lows + 0.5
+    closes[30] = 15.88                            # ...closing far enough below it to break it
+    finder = TrendlineFinder(lows + 1, lows, closes, np.ones(len(lows)))
+    lines = finder.lines_at(31, SWINGS[:3] + [Pivot(30, 15.85, "low", 31)], retest_window=10)
+    # The 0 -> 30 line is intact but runs right beside the broken one: only the broken one is kept.
+    assert [(ln.touches, ln.broken_at) for ln in lines] == [((0, 10, 20), 30)]

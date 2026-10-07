@@ -1,36 +1,99 @@
-"""Command line: `python -m tradebot analyze|backtest|watch --symbol V75 [--mode scalp|swing] ...`."""
+"""Command line.
+
+  python -m tradebot analyze  --symbol V75 --mode scalp       what the bot sees now, and any signal
+  python -m tradebot backtest --symbol XAUUSD --mode swing    test the rules on history
+  python -m tradebot watch    --symbol GBPJPY --mode scalp    print signals live at each candle close
+  python -m tradebot outlook  --symbol XAUUSD,GBPJPY,V75 --horizon week|day
+  python -m tradebot schedule --symbol XAUUSD,GBPJPY,V75 --at 18:00
+                              weekly outlook every Sunday, next-day outlook every evening
+"""
 
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import re
 import time
+from pathlib import Path
 
 from . import data
 from .backtest import run_backtest
+from .money import MoneyManagement, contract_size, lots, quote_rate
+from .outlook import HORIZONS, build_outlook, to_markdown
 from .strategy import MODES, Market, StrategyConfig
 from .structure import px
 
 
-def _load(args):
-    if args.csv:
-        return data.load_csv(args.csv)
-    if args.source == "deriv":
-        return data.load_deriv(args.symbol, args.interval, args.count, args.app_id)
-    if args.source == "yahoo":
-        return data.load_yahoo(args.symbol, args.interval, args.period)
-    # sim: a Deriv-style volatility index with the volatility taken from the symbol (V75 -> 75%)
-    vol = re.search(r"(10|25|50|75|100)", args.symbol or "")
-    seconds = data.DERIV_GRANULARITY.get(args.interval, 300)
-    return data.volatility_index(n=args.count, vol=int(vol[1]) / 100 if vol else 0.75,
-                                 bar_seconds=seconds, seed=args.seed)
+# -- argument helpers --------------------------------------------------------------
+
+def _r_or_off(value: str) -> float | None:
+    return None if value.lower() in ("off", "none", "0") else float(value)
+
+
+def _parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="tradebot", description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
+    p.add_argument("command", choices=["analyze", "backtest", "watch", "outlook", "schedule"])
+    p.add_argument("--mode", choices=sorted(MODES), help="scalp (5m, 1h structure) or swing (4h, daily structure)")
+
+    g = p.add_argument_group("market data")
+    g.add_argument("--symbol", default="V75", help="V10..V100, V75(1s), XAUUSD, GBPJPY, USDJPY, GBPUSD ...; "
+                   "comma-separated for outlook/schedule")
+    g.add_argument("--source", choices=["deriv", "yahoo", "sim"], default="deriv")
+    g.add_argument("--csv", help="OHLC csv file instead of downloading")
+    g.add_argument("--interval", help="1m, 2m, 3m, 5m, 10m, 15m, 30m, 1h, 2h, 4h, 8h, 1d")
+    g.add_argument("--count", type=int, help="candles to download from Deriv / simulate")
+    g.add_argument("--period", help="history for --source yahoo, e.g. 60d, 730d")
+    g.add_argument("--app-id", type=int, default=1089, help="your Deriv API app id")
+    g.add_argument("--seed", type=int, default=7, help="seed for --source sim")
+
+    g = p.add_argument_group("strategy")
+    g.add_argument("--htf", help="higher timeframe: 1h, 4h, D, W, a bar count, or none")
+    g.add_argument("--pivot", type=int, help="bars each side of a swing point")
+    g.add_argument("--min-confluence", type=int)
+    g.add_argument("--min-rr", type=float)
+    g.add_argument("--confirm", choices=["break", "close", "none"],
+                   help="break: enter when price breaks the signal candle (default); close: after a candle "
+                        "closes beyond it; none: next open")
+    g.add_argument("--confirm-bars", type=int, help="candles the confirmation may take")
+    g.add_argument("--no-trend-filter", action="store_true")
+    g.add_argument("--no-breakouts", action="store_true", help="don't trade trendline breaks")
+
+    g = p.add_argument_group("money management")
+    g.add_argument("--equity", type=float, default=10_000, help="account size in USD")
+    g.add_argument("--risk", type=float, help="fraction of the account risked per trade (scalp 0.005, swing 0.01)")
+    g.add_argument("--leverage", type=float, help="max position value / account (default 30)")
+    g.add_argument("--breakeven", type=_r_or_off, help="move stop to entry at this many R, or off")
+    g.add_argument("--partial", type=_r_or_off, help="take partial profit at this many R, or off")
+    g.add_argument("--partial-pct", type=float, help="fraction closed at --partial (default 0.5)")
+    g.add_argument("--trail", choices=["none", "atr", "swing"], help="trailing stop")
+    g.add_argument("--trail-start", type=float, help="start trailing at this many R")
+    g.add_argument("--trail-atr", type=float, help="ATR multiple for --trail atr")
+    g.add_argument("--daily-loss", type=_r_or_off, help="stop trading for the day after losing this fraction, or off")
+    g.add_argument("--max-trades-day", type=int)
+    g.add_argument("--spread", type=float, default=0.0, help="spread in price units per round trip (MT5 spec)")
+    g.add_argument("--fee-bps", type=float, default=0.0, help="commission per side, bps of price")
+    g.add_argument("--contract-size", type=float, help="units per lot (auto: forex 100000, gold 100, indices 1)")
+    g.add_argument("--quote-rate", type=float, help="USD value of 1 unit of the quote currency, for crosses "
+                   "such as GBPJPY (e.g. 0.0067 when USDJPY is 150)")
+    g.add_argument("--lot-step", type=float, default=0.01)
+
+    g = p.add_argument_group("output")
+    g.add_argument("--plot", help="save a chart to this .png")
+    g.add_argument("--bars", type=int, default=300, help="bars shown on the chart")
+    g.add_argument("--trades", help="save trades to this .csv")
+    g.add_argument("--horizon", choices=["day", "week"], default="day", help="outlook period")
+    g.add_argument("--out", default="reports", help="folder for outlook reports and charts")
+    g.add_argument("--at", default="18:00", help="schedule: local time to publish outlooks")
+    return p
 
 
 def _config(args) -> StrategyConfig:
     base = dict(MODES[args.mode]["config"]) if args.mode else {}
-    overrides = dict(min_confluence=args.min_confluence, min_rr=args.min_rr, htf=args.htf,
-                     pivot_left=args.pivot, pivot_right=args.pivot)
-    base.update({k: v for k, v in overrides.items() if v is not None})
+    for key, value in (("min_confluence", args.min_confluence), ("min_rr", args.min_rr), ("htf", args.htf),
+                       ("pivot_left", args.pivot), ("pivot_right", args.pivot),
+                       ("confirmation", args.confirm), ("confirm_bars", args.confirm_bars)):
+        if value is not None:
+            base[key] = value
     if args.htf == "none":
         base["htf"] = None
     if args.no_trend_filter:
@@ -40,82 +103,40 @@ def _config(args) -> StrategyConfig:
     return StrategyConfig(**base)
 
 
-def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(prog="tradebot", description=__doc__)
-    parser.add_argument("command", choices=["analyze", "backtest", "watch"],
-                        help="watch: re-analyse at every candle close and print new signals (Deriv only)")
-    parser.add_argument("--mode", choices=sorted(MODES), help="scalp (5m entries, 1h structure) or "
-                        "swing (daily entries, weekly structure); sets defaults that other flags override")
-    parser.add_argument("--symbol", default="V75",
-                        help="V10..V100, V75(1s), XAUUSD, GBPJPY, USDJPY, GBPUSD ... (default V75)")
-    parser.add_argument("--source", choices=["deriv", "yahoo", "sim"], default="deriv",
-                        help="deriv (default), yahoo (forex/gold only), sim (simulated volatility index)")
-    parser.add_argument("--csv", help="OHLCV csv file instead of downloading")
-    parser.add_argument("--interval", help="candle size: 1m, 2m, 3m, 5m, 10m, 15m, 30m, 1h, 2h, 4h, 8h, 1d")
-    parser.add_argument("--count", type=int, help="candles to download from Deriv / simulate")
-    parser.add_argument("--period", help="history for --source yahoo, e.g. 60d, 730d")
-    parser.add_argument("--app-id", type=int, default=1089, help="your Deriv API app id")
-    parser.add_argument("--seed", type=int, default=7, help="seed for --source sim")
-    parser.add_argument("--htf", help="higher timeframe for structure: 1h, 4h, D, W, a bar count, or none")
-    parser.add_argument("--pivot", type=int, help="bars each side of a swing point")
-    parser.add_argument("--min-confluence", type=int)
-    parser.add_argument("--min-rr", type=float)
-    parser.add_argument("--no-trend-filter", action="store_true")
-    parser.add_argument("--no-breakouts", action="store_true", help="don't trade trendline breaks")
-    parser.add_argument("--equity", type=float, default=10_000)
-    parser.add_argument("--risk", type=float, help="fraction of equity risked per trade (default 0.01)")
-    parser.add_argument("--spread", type=float, default=0.0,
-                        help="spread in price units per round trip, as shown in MT5 (e.g. 0.35 for XAUUSD)")
-    parser.add_argument("--fee-bps", type=float, default=0.0, help="commission per side, in bps of price")
-    parser.add_argument("--leverage", type=float, default=1.0)
-    parser.add_argument("--plot", help="save a chart to this .png")
-    parser.add_argument("--bars", type=int, default=300, help="bars shown on the chart")
-    parser.add_argument("--trades", help="save trades to this .csv")
-    args = parser.parse_args(argv)
-
-    mode = MODES.get(args.mode, {})
-    args.interval = args.interval or mode.get("interval", "5m")
-    args.period = args.period or mode.get("period", "60d")
-    args.count = args.count or mode.get("count", 5000)
-    risk = args.risk if args.risk is not None else mode.get("risk", 0.01)
-
-    if args.command == "watch":
-        return _watch(args)
-
-    market = Market(_load(args), _config(args))
-    result = None
-
-    if args.command == "analyze":
-        _report(market)
-    else:
-        if args.spread == 0 and args.fee_bps == 0:
-            print("note: no trading costs set - pass --spread from your MT5 symbol specification")
-        result = run_backtest(market.df, initial_equity=args.equity, risk_per_trade=risk, fee_bps=args.fee_bps,
-                              spread=args.spread, max_leverage=args.leverage, market=market)
-        st = result.stats
-        print(f"trades {st['trades']}   win rate {st['win_rate']:.1%}   profit factor {st['profit_factor']:.2f}   "
-              f"avg R {st['avg_r']:.2f}")
-        print(f"return {st['total_return']:.2%}   max drawdown {st['max_drawdown']:.2%}   "
-              f"final equity {st['final_equity']:.2f}")
-        if result.trades:
-            frame = result.trades_frame()
-            for setup, g in frame.groupby("setup"):
-                print(f"  {setup:<9} {len(g):>3} trades, win rate {(g.pnl > 0).mean():.0%}, avg R {g.r.mean():.2f}")
-        if args.trades:
-            result.trades_frame().to_csv(args.trades, index=False)
-            print(f"trades -> {args.trades}")
-
-    if args.plot:
-        from .plot import plot
-        plot(market, args.plot, result, last=args.bars)
-        print(f"chart -> {args.plot}")
+def _money(args) -> MoneyManagement:
+    base = dict(MODES[args.mode]["money"]) if args.mode else {}
+    given = {"risk_per_trade": args.risk, "max_leverage": args.leverage, "partial_pct": args.partial_pct,
+             "trail": args.trail, "trail_start_r": args.trail_start, "trail_atr": args.trail_atr,
+             "max_trades_per_day": args.max_trades_day}
+    base.update({k: v for k, v in given.items() if v is not None})
+    argv = " ".join(_argv)
+    for flag, key, value in (("--breakeven", "breakeven_r", args.breakeven), ("--partial", "partial_r", args.partial),
+                             ("--daily-loss", "max_daily_loss", args.daily_loss)):
+        if re.search(rf"{flag}(\s|=|$)", argv):   # given explicitly, possibly as "off"
+            base[key] = value
+    return MoneyManagement(**base)
 
 
-def _report(market: Market) -> None:
+def _load(args, symbol: str | None = None, interval: str | None = None, count: int | None = None):
+    symbol, interval, count = symbol or args.symbol, interval or args.interval, count or args.count
+    if args.csv:
+        return data.load_csv(args.csv)
+    if args.source == "deriv":
+        return data.load_deriv(symbol, interval, count, args.app_id)
+    if args.source == "yahoo":
+        return data.load_yahoo(symbol, interval, args.period or "730d")
+    vol = re.search(r"(10|25|50|75|100)", symbol or "")   # sim: V75 -> 75% volatility
+    return data.volatility_index(n=count, vol=int(vol[1]) / 100 if vol else 0.75,
+                                 bar_seconds=data.DERIV_GRANULARITY.get(interval, 300), seed=args.seed)
+
+
+# -- commands --------------------------------------------------------------------
+
+def _report(market: Market, args, money: MoneyManagement) -> None:
     an = market.analyze(len(market.c) - 1)
     if "time" in market.df.columns:
         print(f"last closed candle {market.df.time.iloc[-1]}")
-    print(f"price {px(an.price)}   ATR {an.atr:.4g}   bias {an.bias}"
+    print(f"price {px(an.price)}   ATR {px(an.atr)}   bias {an.bias}"
           + (f"   HTF bias {an.htf_bias}" if an.htf_bias else ""))
     print("resistance:", ", ".join(f"{px(z.low)}-{px(z.high)} (x{z.touches})" for z in an.resistance[:3]) or "-")
     print("support:   ", ", ".join(f"{px(z.low)}-{px(z.high)} (x{z.touches})" for z in an.support[:3]) or "-")
@@ -124,21 +145,72 @@ def _report(market: Market) -> None:
         print("HTF support:   ", ", ".join(f"{px(z.low)}-{px(z.high)}" for z in an.htf_support[:2]) or "-")
     for line in an.trendlines:
         state = "intact" if line.broken_at is None else f"BROKEN {an.bar - line.broken_at} bars ago"
-        tf = "HTF " if line.htf else ""
-        print(f"{tf}{line.kind} trendline now at {px(line.value_at(an.bar))} "
+        print(f"{'HTF ' if line.htf else ''}{line.kind} trendline now at {px(line.value_at(an.bar))} "
               f"({len(line.touches)} touches, {state})")
     for ob in an.order_blocks[-4:]:
         print(f"{ob.kind} order block {px(ob.low)}-{px(ob.high)}")
+
     s = an.signal
-    if s:
-        print(f"\nSIGNAL {s.side.upper()} ({s.setup}) next open ~{px(s.entry)}  stop {px(s.stop)}  "
-              f"target {px(s.target)}  R:R {s.rr:.2f}")
-        print("  because: " + "; ".join(s.reasons))
-    else:
+    if not s:
         print("\nno setup on the latest bar")
+        return
+    action = "BUY" if s.side == "long" else "SELL"
+    if s.confirmation == "break":
+        how = f"{action} STOP at {px(s.trigger)} (valid {market.cfg.confirm_bars} candles; cancel if price " \
+              f"reaches {px(s.stop)} first)"
+    elif s.confirmation == "close":
+        how = f"{action} at the next open after a candle closes {'above' if s.side == 'long' else 'below'} " \
+              f"{px(s.trigger)} (within {market.cfg.confirm_bars} candles)"
+    else:
+        how = f"{action} at the next open (~{px(s.entry)})"
+    print(f"\nSIGNAL {s.side.upper()} ({s.setup}): {how}")
+    print(f"  stop {px(s.stop)}   target {px(s.target)}   R:R {s.rr:.2f}")
+    print("  because: " + "; ".join(s.reasons))
+
+    sym = data.deriv_symbol(args.symbol)
+    size = args.contract_size or contract_size(sym)
+    rate = args.quote_rate or quote_rate(sym, s.entry)
+    if rate is None:
+        print(f"  size: pass --quote-rate (USD per 1 {sym[-3:]}) to get the lot size for this cross")
+    else:
+        n = lots(args.equity, money.risk_per_trade, s.entry, s.stop, size, rate, args.lot_step)
+        print(f"  size: {n:g} lots = {money.risk_per_trade:.1%} of {args.equity:,.0f} USD at risk "
+              f"(contract size {size:g}; check your MT5 symbol spec)")
+    plan = []
+    if money.partial_r is not None and money.partial_pct > 0:
+        plan.append(f"close {money.partial_pct:.0%} at +{money.partial_r:g}R")
+    if money.breakeven_r is not None:
+        plan.append(f"stop to break-even at +{money.breakeven_r:g}R")
+    if money.trail != "none":
+        what = f"{money.trail_atr:g} ATR behind the best price" if money.trail == "atr" else "behind each new swing"
+        plan.append(f"trail {what} from +{money.trail_start_r:g}R")
+    if plan:
+        print("  manage: " + ", ".join(plan))
 
 
-def _watch(args) -> None:
+def _backtest(market: Market, args, money: MoneyManagement):
+    if args.spread == 0 and args.fee_bps == 0:
+        print("note: no trading costs set - pass --spread from your MT5 symbol specification")
+    result = run_backtest(market.df, money=money, initial_equity=args.equity, fee_bps=args.fee_bps,
+                          spread=args.spread, market=market)
+    st = result.stats
+    print(f"trades {st['trades']}   win rate {st['win_rate']:.1%}   profit factor {st['profit_factor']:.2f}   "
+          f"avg R {st['avg_r']:.2f}")
+    print(f"return {st['total_return']:.2%}   max drawdown {st['max_drawdown']:.2%}   "
+          f"final equity {st['final_equity']:,.2f}")
+    if st["exits"]:
+        print("exits: " + ", ".join(f"{k} {v}" for k, v in st["exits"].items()))
+    if result.trades:
+        frame = result.trades_frame()
+        for setup, g in frame.groupby("setup"):
+            print(f"  {setup:<9} {len(g):>3} trades, win rate {(g.pnl > 0).mean():.0%}, avg R {g.r.mean():.2f}")
+    if args.trades:
+        result.trades_frame().to_csv(args.trades, index=False)
+        print(f"trades -> {args.trades}")
+    return result
+
+
+def _watch(args, money: MoneyManagement) -> None:
     """Re-analyse right after every candle closes; print each new signal once. No orders are sent."""
     if args.source != "deriv" or args.csv:
         raise SystemExit("watch needs live data: use --source deriv")
@@ -153,11 +225,117 @@ def _watch(args) -> None:
         if an.signal and stamp != last_signal_time:
             last_signal_time = stamp
             print()
-            _report(market)
+            _report(market, args, money)
             print("\a", end="", flush=True)
         else:
             print(f"{stamp:%Y-%m-%d %H:%M} {px(an.price)}  no setup", flush=True)
         time.sleep(step - time.time() % step + 2)   # just after the next candle closes
+
+
+def _symbols(args) -> list[str]:
+    return [s.strip() for s in args.symbol.split(",") if s.strip()]
+
+
+def _is_synthetic(symbol: str) -> bool:
+    return not data.deriv_symbol(symbol).startswith("frx")
+
+
+def _outlook(args, horizon: str, symbols: list[str], now: dt.datetime | None = None) -> Path | None:
+    if not symbols:
+        return None
+    spec = HORIZONS[horizon]
+    out_dir = Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    now = now or dt.datetime.now(dt.timezone.utc)
+    stamp = now.strftime("%Y-%m-%d")
+    outlooks, charts = [], {}
+    for symbol in symbols:
+        df = _load(args, symbol, spec["interval"], spec["count"])
+        o = build_outlook(df, symbol, horizon, now)
+        outlooks.append(o)
+        try:
+            from .plot import plot
+            name = f"{horizon}-{stamp}-{re.sub(r'[^A-Za-z0-9]+', '', symbol)}.png"
+            plot(o.market, str(out_dir / name), last=150 if horizon == "day" else 180)
+            charts[symbol] = name
+        except ImportError:
+            pass
+    md = to_markdown(outlooks, horizon, charts)
+    path = out_dir / f"outlook-{horizon}-{stamp}.md"
+    path.write_text(md, encoding="utf-8")
+    print(md)
+    print(f"report -> {path}")
+    return path
+
+
+def _schedule(args) -> None:
+    """Every evening at --at (local time): next-day outlook. On Sunday also the weekly outlook.
+    Forex and gold are skipped when the next day is a weekend; volatility indices trade every day."""
+    hh, mm = (int(x) for x in args.at.split(":"))
+    symbols = _symbols(args)
+    print(f"outlooks at {args.at} local time for {', '.join(symbols)} - Ctrl+C to stop")
+    while True:
+        now = dt.datetime.now()
+        run = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        if run <= now:
+            run += dt.timedelta(days=1)
+        print(f"next outlook {run:%a %d %b %H:%M}", flush=True)
+        time.sleep((run - dt.datetime.now()).total_seconds())
+        for horizon, due in outlooks_due(run, symbols):
+            _safe(_outlook, args, horizon, due)
+
+
+def outlooks_due(run: dt.datetime, symbols: list[str]) -> list[tuple[str, list[str]]]:
+    """What to publish on the evening of `run`: the weekly outlook on Sunday, and a next-day
+    outlook for every market that trades tomorrow (forex and gold rest on Saturday and Sunday)."""
+    due = []
+    if run.weekday() == 6:
+        due.append(("week", symbols))
+    tomorrow_is_weekday = (run.weekday() + 1) % 7 < 5
+    day = [s for s in symbols if tomorrow_is_weekday or _is_synthetic(s)]
+    if day:
+        due.append(("day", day))
+    return due
+
+
+def _safe(fn, *a):
+    try:
+        fn(*a)
+    except (SystemExit, Exception) as exc:   # keep the schedule alive through a network hiccup
+        print(f"outlook failed: {exc}")
+
+
+_argv: list[str] = []
+
+
+def main(argv: list[str] | None = None) -> None:
+    import sys
+    global _argv
+    _argv = list(sys.argv[1:] if argv is None else argv)
+    args = _parser().parse_args(_argv)
+
+    mode = MODES.get(args.mode, {})
+    args.interval = args.interval or mode.get("interval", "5m")
+    args.period = args.period or mode.get("period")
+    args.count = args.count or mode.get("count", 5000)
+    money = _money(args)
+
+    if args.command == "outlook":
+        _outlook(args, args.horizon, _symbols(args))
+        return
+    if args.command == "schedule":
+        _schedule(args)
+        return
+    if args.command == "watch":
+        _watch(args, money)
+        return
+
+    market = Market(_load(args), _config(args))
+    result = _backtest(market, args, money) if args.command == "backtest" else _report(market, args, money)
+    if args.plot:
+        from .plot import plot
+        plot(market, args.plot, result, last=args.bars)
+        print(f"chart -> {args.plot}")
 
 
 if __name__ == "__main__":

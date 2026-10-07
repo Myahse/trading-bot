@@ -144,6 +144,10 @@ class TrendlineFinder:
                 if broken not in best or score > best[broken][0]:
                     best[broken] = (score, replace(line, touches=touches,
                                                    broken_at=break_bar if broken else None))
+            if False in best and True in best:
+                intact, broken = best[False][1], best[True][1]
+                if abs(intact.value_at(t) - broken.value_at(t)) <= self.touch_atr * self.atr[t]:
+                    del best[False]   # its near-twin just broke, so in practice this one broke too
             out += [best[k][1] for k in (False, True) if k in best]
         return out
 
