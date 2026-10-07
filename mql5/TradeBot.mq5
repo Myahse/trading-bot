@@ -70,7 +70,7 @@ input int      InpHistoryBars     = 5000;           // Chart candles analysed (m
 input int      InpHTFHistoryBars  = 1000;           // Higher-timeframe candles (zones use all of them)
 
 input group "Display"
-input bool     InpDraw            = true;           // Draw zones, trendlines, order blocks, swings
+input bool     InpDraw            = true;           // Draw zones, trendlines, order blocks, swings, trade boxes
 input bool     InpPanel           = true;           // Show the analysis panel
 input bool     InpScreenshots     = true;           // Save a screenshot for every trade (MQL5/Files)
 
@@ -126,6 +126,7 @@ string   lastNote = "";
 bool     armed = false;
 Signal   armedSig;
 int      armedBarsLeft = 0;
+datetime armedAt = 0;                                                         // the signal candle, where its box starts
 
 //+------------------------------------------------------------------+
 //| Small helpers                                                    |
@@ -1072,6 +1073,84 @@ void Text(string name, datetime t, double p, string txt, color clr, ENUM_ANCHOR_
    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
   }
 
+//--- TradingView-style position: green box entry -> take-profit, red box entry -> stop-loss
+void PositionBox(string nm, datetime t1, datetime t2, double entry, double sl, double tp, bool text)
+  {
+   color up = C'42,157,143', dn = C'231,111,81', ink = C'38,70,83';
+   double risk = MathAbs(entry - sl);
+   datetime mid = (datetime)(t1 + (t2 - t1) / 2);
+   if(tp > 0)
+     {
+      Rect(nm + "tpF", t1, entry, t2, tp, C'204,234,228', true, 1);
+      Rect(nm + "tpB", t1, entry, t2, tp, up, false, 1);
+      if(text)
+         Text(nm + "tpT", mid, tp, StringFormat("Take profit %.2f%%", MathAbs(tp - entry) / entry * 100)
+              + (risk > 0 ? StringFormat("  %.1fR", MathAbs(tp - entry) / risk) : ""), up, tp > entry ? ANCHOR_LOWER : ANCHOR_UPPER);
+     }
+   if(sl > 0)
+     {
+      Rect(nm + "slF", t1, entry, t2, sl, C'250,215,205', true, 1);
+      Rect(nm + "slB", t1, entry, t2, sl, dn, false, 1);
+      if(text)
+         Text(nm + "slT", mid, sl, StringFormat("Stop loss %.2f%%", risk / entry * 100), dn, sl > entry ? ANCHOR_LOWER : ANCHOR_UPPER);
+     }
+   Segment(nm + "e", t1, entry, t2, entry, ink, 2, STYLE_SOLID, false);
+  }
+
+//--- this EA's trades opened since `since` as boxes from entry to exit; the open one runs up to `right`
+void DrawTrades(datetime since, datetime right)
+  {
+   color up = C'42,157,143', dn = C'231,111,81', ink = C'38,70,83';
+   ulong openId = 0;
+   ulong tk = MyPosition();
+   if(tk > 0 && PositionSelectByTicket(tk)) openId = (ulong)PositionGetInteger(POSITION_IDENTIFIER);
+   if(!HistorySelect(since, TimeCurrent() + 86400)) return;
+   int total = HistoryDealsTotal(), drawn = 0;
+   for(int i = total - 1; i >= 0 && drawn < 30; i--)
+     {
+      ulong d = HistoryDealGetTicket(i);
+      if(d == 0 || HistoryDealGetString(d, DEAL_SYMBOL) != _Symbol) continue;
+      if(HistoryDealGetInteger(d, DEAL_MAGIC) != InpMagic || HistoryDealGetInteger(d, DEAL_ENTRY) != DEAL_ENTRY_IN) continue;
+      ulong id = (ulong)HistoryDealGetInteger(d, DEAL_POSITION_ID);
+      datetime t1 = (datetime)HistoryDealGetInteger(d, DEAL_TIME);
+      double entry = HistoryDealGetDouble(d, DEAL_PRICE);
+      double sl = HistoryDealGetDouble(d, DEAL_SL), tp = HistoryDealGetDouble(d, DEAL_TP);   // as the trade was opened
+      string nm = PFX + "tr" + IntegerToString((long)id);
+      if(id == openId)
+        {
+         PositionBox(nm, t1, right, entry, sl, tp, true);
+         double slNow = PositionGetDouble(POSITION_SL);
+         if(slNow > 0 && Px(slNow) != Px(sl))                   // break-even / trailing: where the stop is now
+           {
+            Segment(nm + "sl", t1, slNow, right, slNow, dn, 1, STYLE_DASH, false);
+            Text(nm + "slN", right, slNow, "SL now " + PS(slNow), dn, ANCHOR_LEFT);
+           }
+         Text(nm + "eT", right, entry, (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY ? "LONG open " : "SHORT open ")
+              + PS(entry), ink, ANCHOR_LEFT);
+         drawn++;
+         continue;
+        }
+      datetime t2 = 0;                                       // the position's last closing deal
+      double exitPx = 0, pnl = 0;
+      for(int j = i + 1; j < total; j++)
+        {
+         ulong o = HistoryDealGetTicket(j);
+         if(o == 0 || (ulong)HistoryDealGetInteger(o, DEAL_POSITION_ID) != id) continue;
+         pnl += HistoryDealGetDouble(o, DEAL_PROFIT) + HistoryDealGetDouble(o, DEAL_SWAP) + HistoryDealGetDouble(o, DEAL_COMMISSION);
+         if(HistoryDealGetInteger(o, DEAL_ENTRY) == DEAL_ENTRY_OUT)
+           { t2 = (datetime)HistoryDealGetInteger(o, DEAL_TIME); exitPx = HistoryDealGetDouble(o, DEAL_PRICE); }
+        }
+      if(t2 == 0) continue;                                  // not closed (or closed outside this history window)
+      pnl += HistoryDealGetDouble(d, DEAL_COMMISSION);
+      PositionBox(nm, t1, t2, entry, sl, tp, false);
+      Segment(nm + "x", t1, entry, t2, exitPx, ink, 1, STYLE_DOT, false);
+      double top = MathMax(entry, MathMax(sl, tp));
+      Text(nm + "pl", (datetime)(t1 + (t2 - t1) / 2), top, StringFormat("%+.2f %s", pnl, AccountInfoString(ACCOUNT_CURRENCY)),
+           pnl >= 0 ? up : dn, ANCHOR_LOWER);
+      drawn++;
+     }
+  }
+
 void Draw(const Signal &s, bool haveSignal)
   {
    ObjectsDeleteAll(0, PFX);
@@ -1134,16 +1213,17 @@ void Draw(const Signal &s, bool haveSignal)
          Text(PFX + "s" + IntegerToString(i), R[P[i].index].time, P[i].price, tag, clrGray, isHigh ? ANCHOR_LOWER : ANCHOR_UPPER);
      }
 
+   DrawTrades(left, right);
+
    Signal shown = s;
-   bool show = haveSignal;
-   if(armed) { shown = armedSig; show = true; }        // a waiting setup stays on the chart until filled/cancelled
+   bool show = haveSignal && MyPosition() == 0;
+   datetime boxFrom = R[t].time;
+   if(armed) { shown = armedSig; show = true; boxFrom = armedAt; }   // a waiting setup stays on the chart until filled/cancelled
    if(show)
      {
       Signal s2 = shown;
       double entry = (s2.trigger > 0) ? s2.trigger : s2.entry;
-      Segment(PFX + "entry", R[t].time, entry, right, entry, ink, 2, STYLE_DASH, false);
-      Segment(PFX + "sl", R[t].time, s2.stop, right, s2.stop, dn, 2, STYLE_SOLID, false);
-      Segment(PFX + "tp", R[t].time, s2.target, right, s2.target, up, 2, STYLE_SOLID, false);
+      PositionBox(PFX + "setup", boxFrom, right, entry, s2.stop, s2.target, true);
       string verb = (s2.side == 1) ? "BUY" : "SELL";
       Text(PFX + "entryT", right, entry, (s2.trigger > 0 ? verb + " STOP " : verb + " ") + PS(entry), ink, ANCHOR_LEFT);
       Text(PFX + "slT", right, s2.stop, "SL " + PS(s2.stop), dn, ANCHOR_LEFT);
@@ -1243,6 +1323,7 @@ void OnTick()
            {
             armed = true;
             armedSig = s;
+            armedAt = R[N - 1].time;
             armedBarsLeft = C.confirmBars;
             Journal("order placed", StringFormat("%s %s: %s %s, SL %s, TP %s, R:R %.1f - %s",
                                                  s.side == 1 ? "LONG" : "SHORT", s.setup,

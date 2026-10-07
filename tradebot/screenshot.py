@@ -27,7 +27,8 @@ OK, NO, DOT = "✓", "✗", "•"
 # -- technical ---------------------------------------------------------------------
 
 def technical_screenshot(market: Market, symbol: str, path: str, entry_tf: str, htf_tf: str,
-                         fundamentals: Fundamentals | None = None, title: str = "", last: int = 160) -> None:
+                         fundamentals: Fundamentals | None = None, title: str = "", last: int = 160,
+                         trades: list | None = None) -> None:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -43,9 +44,10 @@ def technical_screenshot(market: Market, symbol: str, path: str, entry_tf: str, 
                          fontsize=11, color=INK, fontweight="bold")
     else:
         ax_htf.axis("off")
-    draw_entry(ax_entry, market, an, last=last)
+    draw_entry(ax_entry, market, an, last=last, trades=trades)
     ax_entry.set_title(f"2. Entry chart - {entry_tf} candles: structure {an.bias.upper()}, "
-                       f"levels, trendlines, order blocks" + (", setup" if an.signal else ""),
+                       f"levels, trendlines, order blocks" + (", setup" if an.signal else "")
+                       + (", trades" if trades else ""),
                        loc="left", fontsize=11, color=INK, fontweight="bold")
     _steps_panel(ax_text, market, an, entry_tf, htf_tf, fundamentals)
 

@@ -27,8 +27,14 @@ It runs inside MT5 on a chart and places the trades itself.
    - trendlines: thick purple for the higher timeframe, dotted after a break
    - the nearest order blocks
    - swing labels (HH / HL / LH / LL)
-   - for a setup, the entry, SL and TP lines. A setup waiting for its confirmation stays on the chart
+   - for a setup, a TradingView-style position box: green from the entry to the take-profit (where
+     to get out with a profit), red from the entry to the stop-loss (where to get out with a loss),
+     labelled with the distance in % and R. A setup waiting for its confirmation stays on the chart
      until it fills or is cancelled
+   - the open trade as the same box, running to the right edge, with a dashed line where the stop is
+     now after break-even or trailing
+   - the EA's closed trades on the visible candles: a box from entry to exit, a dotted line from the
+     entry price to the exit price, and the profit or loss
 5. The top-left panel shows how the bot reads the market, step by step, and what it is waiting for.
 
 On a **real** account it only analyses and never sends an order, unless you set *Allow trading a

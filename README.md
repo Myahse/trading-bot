@@ -181,7 +181,10 @@ Every analysis can be saved as two images, so you can see each step:
 1. **Big picture:** higher-timeframe candles with swing labels (HH, HL, LH, LL), zones,
    trendlines and the candle still forming.
 2. **Entry chart:** zones, trendlines with their touches and breaks, order blocks, swing labels
-   and, when there is a setup, the trade plan (BUY/SELL STOP entry, SL and TP boxes, R:R).
+   and, when there is a setup, the trade plan drawn like TradingView's long/short position tool:
+   the BUY/SELL STOP entry line, a green box up to the take-profit and a red box down to the
+   stop-loss, each labelled with its distance (% and R). Paper-trading screenshots also draw the
+   open trade and the closed ones as boxes.
 3. **"How the bot read it":** a panel listing each step and its result (✓ / ✗):
    - the trend, with the swings behind it
    - where price sits against the nearest levels (in ATR)
@@ -257,7 +260,15 @@ folder set to `trading-bot`: weekly on Sunday, and daily Sunday to Thursday.
 - the 2 nearest zones on each side of price
 - the nearest higher-timeframe zone on each side (outlined)
 - the order block closest to price on each side
-- the trades
+- the setup and the trades as **position boxes**, like TradingView's long/short position tool:
+  - green box from the entry to the take-profit: where to get out with a profit
+  - red box from the entry to the stop-loss: where to get out with a loss
+  - a setup's box starts at the signal candle and is labelled with its distances (% and R);
+    the entry line is the BUY/SELL STOP level
+  - a closed trade's box runs from its entry to its exit, with a dotted line from entry price
+    to exit price, an X at the exit and the result in R above it
+  - a trade still open runs to the right edge, with a dashed line where the stop is now
+    (break-even or trailing)
 
 Trendlines show:
 - every swing point that touches them (o)

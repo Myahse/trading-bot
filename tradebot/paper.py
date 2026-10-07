@@ -165,7 +165,8 @@ class PaperTrader:
             shots.mkdir(exist_ok=True)
             name = f"{when:%Y%m%d-%H%M}-{e['event'].replace(' ', '-')}.png"
             technical_screenshot(Market(self.df.iloc[: e["bar"] + 1], self.cfg), self.symbol, str(shots / name),
-                                 self.interval, str(self.cfg.htf or "-"), None, f"paper: {describe(e)}")
+                                 self.interval, str(self.cfg.htf or "-"), None, f"paper: {describe(e)}",
+                                 trades=self.engine.trades)
         except Exception as exc:   # a chart must never stop the trading loop
             self.log(f"screenshot failed: {exc}")
 

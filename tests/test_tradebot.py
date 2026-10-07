@@ -696,3 +696,15 @@ def test_far_swing_starts_a_new_level_instead_of_moving_the_old_one():
               Pivot(60, 105.2, "high", 63)]
     zones = sorted(LevelBook(swings, atr, tol_atr=0.6).at(70), key=lambda z: z.low)
     assert len(zones) == 2 and zones[0].high < 101 and zones[1].low > 104
+
+
+def test_chart_draws_setup_and_trades_as_position_boxes(tmp_path):
+    pytest.importorskip("matplotlib")
+    from tradebot.screenshot import technical_screenshot
+    cfg = StrategyConfig(min_confluence=1, htf=6)
+    df = data.synthetic(n=600, seed=3)
+    market = Market(df, cfg)
+    res = run_backtest(df, cfg, market=market)
+    path = tmp_path / "shot.png"
+    technical_screenshot(market, "SYN", str(path), "1h", "6h", trades=res.trades)
+    assert path.stat().st_size > 0
