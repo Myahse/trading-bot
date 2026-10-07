@@ -18,8 +18,9 @@ def _normalize(raw: pd.DataFrame, time=None) -> pd.DataFrame:
         raise ValueError(f"data is missing columns: {missing}")
     df = raw[REQUIRED].astype(float)
     df["volume"] = raw["volume"].astype(float) if "volume" in raw.columns else 0.0
-    if time is not None:
-        df.insert(0, "time", list(time))
+    if time is not None:   # always UTC, so day boundaries and "UTC" labels are right whatever the source
+        df.insert(0, "time", pd.to_datetime(pd.Series(list(time)), utc=True).to_numpy())
+        df["time"] = pd.to_datetime(df["time"], utc=True)
     return df.dropna(subset=REQUIRED).reset_index(drop=True)
 
 
