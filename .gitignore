@@ -2,3 +2,5 @@ __pycache__/
 .pytest_cache/
 *.png
 trades*.csv
+fundamentals.json
+reports/

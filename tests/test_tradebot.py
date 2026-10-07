@@ -363,7 +363,11 @@ def test_outlook_command_writes_report_and_charts(tmp_path):
     main(["outlook", "--source", "sim", "--symbol", "V75,V25", "--horizon", "week", "--out", str(tmp_path)])
     files = sorted(p.name for p in tmp_path.iterdir())
     assert any(f.startswith("outlook-week-") and f.endswith(".md") for f in files)
-    assert sum(f.endswith(".png") for f in files) == 2
+    for sym in ("V75", "V25"):   # a technical and a fundamental screenshot per market
+        assert any(f.endswith(f"{sym}-technical.png") for f in files)
+        assert any(f.endswith(f"{sym}-fundamental.png") for f in files)
+    report = next(tmp_path.glob("outlook-week-*.md")).read_text()
+    assert "### Technical" in report and "### Fundamental" in report and "Verdict" in report
 
 
 def test_an_intact_twin_of_a_broken_line_is_dropped():
@@ -375,3 +379,103 @@ def test_an_intact_twin_of_a_broken_line_is_dropped():
     lines = finder.lines_at(31, SWINGS[:3] + [Pivot(30, 15.85, "low", 31)], retest_window=10)
     # The 0 -> 30 line is intact but runs right beside the broken one: only the broken one is kept.
     assert [(ln.touches, ln.broken_at) for ln in lines] == [((0, 10, 20), 30)]
+
+
+
+# -- fundamentals --------------------------------------------------------------------
+
+import datetime as _dt
+
+from tradebot import fundamentals as fund
+
+NOW = _dt.datetime(2026, 10, 11, 18, 0, tzinfo=_dt.timezone.utc)   # a Sunday evening
+
+
+def _calendar():
+    return fund.parse_calendar([
+        {"title": "CPI m/m", "country": "USD", "date": "2026-10-14T08:30:00-04:00", "impact": "High",
+         "forecast": "0.3%", "previous": "0.4%"},
+        {"title": "GDP m/m", "country": "GBP", "date": "2026-10-12T02:00:00-04:00", "impact": "Medium"},
+        {"title": "Retail Sales", "country": "AUD", "date": "2026-10-13T21:30:00-04:00", "impact": "High"},
+        {"title": "Bank Holiday", "country": "JPY", "date": "2026-10-12T00:00:00-04:00", "impact": "Holiday"},
+        {"title": "Last week", "country": "USD", "date": "2026-10-08T08:30:00-04:00", "impact": "High"},
+    ])
+
+
+def _fx(usd_move=0.01, gbp_move=0.0):
+    """Ten days of USD values per currency; on the last 5 days the USD gains `usd_move`."""
+    idx = pd.date_range("2026-10-01", periods=10, freq="D")
+    values = pd.DataFrame({c: 1.0 for c in fund.MAJORS}, index=idx)
+    for c in fund.MAJORS:
+        if c != "USD":
+            values.loc[idx[5:], c] = 1 / (1 + usd_move)
+    values.loc[idx[5:], "GBP"] *= 1 + gbp_move
+    return values
+
+
+def _drivers(dxy=1.0, tnx=0.10, vix=-5.0):
+    idx = pd.date_range("2026-09-01", periods=30, freq="D")
+    d = pd.DataFrame({"DX-Y.NYB": 100.0, "^TNX": 4.0, "^VIX": 20.0}, index=idx)
+    d.iloc[-5:, 0] = 100 * (1 + dxy / 100)
+    d.iloc[-5:, 1] = 4.0 + tnx
+    d.iloc[-5:, 2] = 20 * (1 + vix / 100)
+    return d
+
+
+def test_parse_calendar_converts_to_utc():
+    cpi = _calendar()[-1]
+    assert cpi.title == "CPI m/m" and cpi.when == _dt.datetime(2026, 10, 14, 12, 30, tzinfo=_dt.timezone.utc)
+
+
+def test_weekly_calendar_keeps_relevant_high_and_medium_events():
+    f = fund.analyse("frxGBPJPY", "week", NOW, _calendar(), None, None)
+    assert [e.title for e in f.events] == ["GDP m/m"]                 # not AUD, not holidays, not last week
+    f = fund.analyse("frxXAUUSD", "week", NOW, _calendar(), None, None)
+    assert [e.title for e in f.events] == ["CPI m/m"] and "CPI" in f.warnings[0]
+
+
+def test_gold_is_bearish_when_dollar_and_yields_rise_and_fear_falls():
+    f = fund.analyse("frxXAUUSD", "week", NOW, [], _fx(usd_move=0.01), _drivers(dxy=1.0, tnx=0.10, vix=-10))
+    assert f.bias == "bearish" and f.score < -0.75
+    f = fund.analyse("frxXAUUSD", "week", NOW, [], _fx(usd_move=-0.01), _drivers(dxy=-1.0, tnx=-0.10, vix=10))
+    assert f.bias == "bullish"
+
+
+def test_pair_strength_rates_and_views():
+    f = fund.analyse("frxGBPJPY", "week", NOW, [], _fx(gbp_move=0.01), None,
+                     {"rates": {"GBP": 4.0, "JPY": 0.5}, "views": {"JPY": "dovish"}})
+    assert f.bias == "bullish" and len(f.reasons) == 3
+
+
+def test_synthetic_indices_have_no_fundamentals():
+    f = fund.analyse("R_75", "week", NOW, _calendar(), _fx(), _drivers())
+    assert not f.applicable and "random" in f.reasons[0]
+
+
+def test_events_soon_flags_news_within_the_hour():
+    cpi_time = _dt.datetime(2026, 10, 14, 12, 0, tzinfo=_dt.timezone.utc)
+    assert [e.title for e in fund.events_soon(_calendar(), "frxXAUUSD", cpi_time)] == ["CPI m/m"]
+    assert fund.events_soon(_calendar(), "R_75", cpi_time) == []
+
+
+def test_verdict_flags_conflict_between_setup_and_fundamentals():
+    from tradebot.screenshot import verdict
+    df = data.volatility_index(n=4000, vol=0.75, bar_seconds=300, seed=3)
+    m = Market(df, mode_config("scalp"))
+    t = next(t for t in range(3000, 4000) if m.analyze(t).signal)
+    an = m.analyze(t)
+    against = fund.Fundamentals("frxXAUUSD", True, bias="bearish" if an.signal.side == "long" else "bullish")
+    assert verdict(an, against)[1] == "Verdict: conflict"
+    assert verdict(an, None)[1].startswith("Verdict: " + an.signal.side.upper())
+
+
+def test_screenshots_render(tmp_path):
+    from tradebot.screenshot import fundamental_screenshot, technical_screenshot
+    df = data.volatility_index(n=4000, vol=0.75, bar_seconds=300, seed=3)
+    m = Market(df.iloc[:3876], mode_config("scalp"))
+    gold = fund.analyse("frxXAUUSD", "week", NOW, _calendar(), _fx(), _drivers())
+    technical_screenshot(m, "V75", str(tmp_path / "t.png"), "5m", "1h", gold)
+    fundamental_screenshot(gold, str(tmp_path / "g.png"), "week")
+    fundamental_screenshot(fund.analyse("frxGBPJPY", "day", NOW, [], _fx(), None), str(tmp_path / "p.png"), "day")
+    fundamental_screenshot(fund.analyse("R_75", "day", NOW, None, None, None), str(tmp_path / "s.png"), "day")
+    assert all((tmp_path / n).stat().st_size > 10_000 for n in ("t.png", "g.png", "p.png", "s.png"))

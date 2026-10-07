@@ -97,6 +97,50 @@ Reward:risk is measured from the confirmation level, not from the signal candle'
 The backtest moves stops only at candle closes, so it never assumes the order of prices inside
 a candle. When one candle touches both the stop and the target, it assumes the stop came first.
 
+## Screenshots: how the bot read the market
+
+Every analysis can be saved as two images, so you can see each step:
+
+**Technical** (`<symbol>-technical.png`):
+1. **Big picture:** higher-timeframe candles with swing labels (HH, HL, LH, LL), zones,
+   trendlines and the candle still forming.
+2. **Entry chart:** zones, trendlines with their touches and breaks, order blocks, swing labels
+   and, when there is a setup, the trade plan (BUY/SELL STOP entry, SL and TP boxes, R:R).
+3. **"How the bot read it":** a panel listing each step and its result (✓ / ✗):
+   - the trend, with the swings behind it
+   - where price sits against the nearest levels (in ATR)
+   - trendlines and order blocks
+   - the setup and its confirmation, and the risk
+   - the fundamental bias
+   - a final verdict (take it if confirmed / wait / conflict)
+
+**Fundamental** (`<symbol>-fundamental.png`, forex and gold):
+- **Economic calendar:** high and medium impact events for the currencies involved, tomorrow or
+  this week, from the free ForexFactory feed.
+- **Currency strength:** each major's % change against the basket of majors (1 day / 5 days).
+- **Gold drivers:** US dollar index (DXY), US 10-year yield and VIX, with what each move means
+  for gold.
+- **Your inputs:** central-bank rates (carry) and your views from `fundamentals.json`. Copy
+  `fundamentals.example.json` and fill it in after each central-bank meeting.
+- **Fundamental bias** (bullish / bearish / neutral) with every reason listed. If it disagrees
+  with the technical setup, the verdict says **conflict**: skip the trade or use half size.
+
+High-impact news within the hour is flagged on live signals: don't enter around it.
+
+Volatility indices get a card explaining why they have no fundamentals. Deriv generates them
+with a random number generator, so only the technical picture and risk management apply.
+
+The calendar feed has forecasts but no actual results, so the bot uses it to warn about upcoming
+risk. It does not score data surprises.
+
+```bash
+python -m tradebot analyze --mode swing --symbol XAUUSD --screenshot shots/   # both images now
+python -m tradebot watch   --mode scalp --symbol GBPJPY                      # saves both on every signal
+python -m tradebot outlook --symbol XAUUSD,GBPJPY,V75 --horizon week         # report embeds both per market
+```
+
+Add `--no-fundamentals` to skip the downloads.
+
 ## Outlooks: Sunday for the week, every evening for the next day (`tradebot/outlook.py`)
 
 For each market the report gives:
@@ -107,7 +151,8 @@ For each market the report gives:
 - a main scenario (with the trend) and an alternative
 - the trendline breaks and retests to watch, and any live setup
 
-Each report is saved as Markdown with a chart per market.
+Each report is saved as Markdown with a technical and a fundamental screenshot per market, a
+fundamentals section (bias, reasons, calendar table) and a verdict that combines both.
 
 ```bash
 python -m tradebot outlook --symbol XAUUSD,GBPJPY,USDJPY,V75 --horizon week   # Sunday

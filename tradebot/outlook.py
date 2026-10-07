@@ -195,14 +195,20 @@ def _period_name(horizon: str, now: dt.datetime) -> str:
     return "week of " + monday.strftime("%d %b %Y")
 
 
-def to_markdown(outlooks: list[Outlook], horizon: str, charts: dict[str, str] | None = None) -> str:
+def to_markdown(outlooks: list[Outlook], horizon: str, charts: dict[str, str] | None = None,
+                fundamentals: dict | None = None, screenshots: dict[str, list[tuple[str, str]]] | None = None,
+                verdicts: dict[str, tuple[str, str, str]] | None = None) -> str:
     when = outlooks[0].period if outlooks else ""
     title = "Weekly outlook" if horizon == "week" else "Daily outlook"
     lines = [f"# {title} - {when}", "",
              "_Levels and conditions to watch, not predictions. Always wait for confirmation._", ""]
     for o in outlooks:
         unit = "day" if horizon == "day" else "week"
-        lines += [f"## {o.symbol}", "",
+        lines += [f"## {o.symbol}", ""]
+        if verdicts and o.symbol in verdicts:
+            _, head, text = verdicts[o.symbol]
+            lines += [f"> **{head}** - {text}", ""]
+        lines += [f"### Technical", "",
                   f"- **Price** {px(o.price)}   **Trend** {o.trend} ({'daily' if horizon == 'day' else 'weekly'} "
                   f"structure), {o.entry_trend} on {'1h' if horizon == 'day' else '4h'}",
                   f"- **Typical {unit} range** ≈ {px(o.expected_range)} "
@@ -215,6 +221,21 @@ def to_markdown(outlooks: list[Outlook], horizon: str, charts: dict[str, str] | 
         lines += ["", "**Scenarios**", ""] + [f"- {s}" for s in o.scenarios]
         if o.watch:
             lines += ["", "**Watch**", ""] + [f"- {w}" for w in o.watch]
+        f = (fundamentals or {}).get(o.symbol)
+        if f is not None:
+            lines += ["", "### Fundamental", ""]
+            if not f.applicable:
+                lines += [f.reasons[0]]
+            else:
+                lines += [f"**Bias: {f.bias}** (score {f.score:+.2f})", ""] + [f"- {r}" for r in f.reasons]
+                lines += [f"- ⚠ {w}" for w in f.warnings]
+                if f.events:
+                    lines += ["", "| When (UTC) | Ccy | Impact | Event | Forecast | Previous |",
+                              "|---|---|---|---|---|---|"]
+                    lines += [f"| {e.when:%a %d %H:%M} | {e.currency} | {e.impact} | {e.title} | "
+                              f"{e.forecast or '-'} | {e.previous or '-'} |" for e in f.events[:12]]
+        for caption, name in (screenshots or {}).get(o.symbol, []):
+            lines += ["", f"![{o.symbol} {caption}]({name})"]
         if charts and o.symbol in charts:
             lines += ["", f"![{o.symbol}]({charts[o.symbol]})"]
         lines.append("")

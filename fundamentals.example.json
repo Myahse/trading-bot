@@ -1,0 +1,19 @@
+{
+  "_how_to_use": "Copy to fundamentals.json and fill in. Rates: current central-bank policy rates in %, used for the carry bias of a pair (leave null to skip). Views: your read of each central bank / currency: hawkish, dovish, bullish, bearish or neutral. Update them after each central-bank meeting.",
+  "rates": {
+    "USD": null,
+    "EUR": null,
+    "GBP": null,
+    "JPY": null,
+    "AUD": null,
+    "CAD": null,
+    "CHF": null,
+    "NZD": null
+  },
+  "views": {
+    "USD": "neutral",
+    "GBP": "neutral",
+    "JPY": "neutral",
+    "XAU": "neutral"
+  }
+}

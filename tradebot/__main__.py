@@ -19,6 +19,7 @@ from pathlib import Path
 from . import data
 from .backtest import run_backtest
 from .money import MoneyManagement, contract_size, lots, quote_rate
+from . import fundamentals as fund
 from .outlook import HORIZONS, build_outlook, to_markdown
 from .strategy import MODES, Market, StrategyConfig
 from .structure import px
@@ -81,6 +82,10 @@ def _parser() -> argparse.ArgumentParser:
     g.add_argument("--plot", help="save a chart to this .png")
     g.add_argument("--bars", type=int, default=300, help="bars shown on the chart")
     g.add_argument("--trades", help="save trades to this .csv")
+    g.add_argument("--screenshot", metavar="DIR", help="analyze: save technical + fundamental screenshots here")
+    g.add_argument("--no-fundamentals", action="store_true", help="skip calendar / currency strength / drivers")
+    g.add_argument("--views", default="fundamentals.json",
+                   help="your central-bank rates and views (see fundamentals.example.json)")
     g.add_argument("--horizon", choices=["day", "week"], default="day", help="outlook period")
     g.add_argument("--out", default="reports", help="folder for outlook reports and charts")
     g.add_argument("--at", default="18:00", help="schedule: local time to publish outlooks")
@@ -130,9 +135,56 @@ def _load(args, symbol: str | None = None, interval: str | None = None, count: i
                                  bar_seconds=data.DERIV_GRANULARITY.get(interval, 300), seed=args.seed)
 
 
+TF_NAMES = {"D": "daily", "W": "weekly", "1h": "1h", "4h": "4h", "15min": "15m"}
+
+
+def _tf_name(tf) -> str:
+    return TF_NAMES.get(str(tf), str(tf)) if tf else "-"
+
+
+_macro_cache: dict = {}
+
+
+def _fundamentals(args, symbol: str, horizon: str, now: dt.datetime | None = None):
+    """Fundamental analysis for one symbol, or None when switched off. Downloads are shared per run
+    and failures degrade gracefully (the analysis says what is missing)."""
+    if args.no_fundamentals:
+        return None
+    sym = data.deriv_symbol(symbol)
+    now = now or dt.datetime.now(dt.timezone.utc)
+    if fund.currencies(sym) is not None and "calendar" not in _macro_cache:
+        for key, getter in (("calendar", fund.fetch_calendar),
+                            ("fx", lambda: fund.usd_values(fund.fetch_closes([t for t, _ in fund.YAHOO_FX.values()]))),
+                            ("drivers", lambda: fund.fetch_closes(list(fund.GOLD_DRIVERS.values())))):
+            try:
+                _macro_cache[key] = getter()
+            except Exception as exc:  # network down, feed changed...
+                print(f"note: {key} data unavailable ({exc.__class__.__name__})")
+                _macro_cache[key] = None
+    return fund.analyse(sym, horizon, now, _macro_cache.get("calendar"), _macro_cache.get("fx"),
+                        _macro_cache.get("drivers"), fund.load_views(args.views))
+
+
+def _screenshots(market: Market, args, symbol: str, out_dir: Path, prefix: str, f, entry_tf: str,
+                 title: str = "", horizon: str = "day") -> list[tuple[str, str]]:
+    """Save the technical (and fundamental) screenshot; returns [(caption, file name)]."""
+    from .screenshot import fundamental_screenshot, technical_screenshot
+    out_dir.mkdir(parents=True, exist_ok=True)
+    safe = re.sub(r"[^A-Za-z0-9]+", "", symbol)
+    shots = []
+    tech = f"{prefix}{safe}-technical.png"
+    technical_screenshot(market, symbol, str(out_dir / tech), entry_tf, _tf_name(market.cfg.htf), f, title)
+    shots.append(("technical analysis", tech))
+    if f is not None:
+        name = f"{prefix}{safe}-fundamental.png"
+        fundamental_screenshot(f, str(out_dir / name), horizon, title)
+        shots.append(("fundamental analysis", name))
+    return shots
+
+
 # -- commands --------------------------------------------------------------------
 
-def _report(market: Market, args, money: MoneyManagement) -> None:
+def _report(market: Market, args, money: MoneyManagement, f=None) -> None:
     an = market.analyze(len(market.c) - 1)
     if "time" in market.df.columns:
         print(f"last closed candle {market.df.time.iloc[-1]}")
@@ -150,9 +202,27 @@ def _report(market: Market, args, money: MoneyManagement) -> None:
     for ob in an.order_blocks[-4:]:
         print(f"{ob.kind} order block {px(ob.low)}-{px(ob.high)}")
 
+    if f is not None:
+        if f.applicable:
+            print(f"fundamentals: {f.bias} (score {f.score:+.2f})")
+            for r in f.reasons:
+                print(f"  - {r}")
+            for w in f.warnings:
+                print(f"  ! {w}")
+        else:
+            print("fundamentals: none - synthetic index (random by design)")
+        soon = fund.events_soon(_macro_cache.get("calendar") or [], data.deriv_symbol(args.symbol),
+                                dt.datetime.now(dt.timezone.utc))
+        for e in soon:
+            print(f"  !! HIGH-IMPACT NEWS within the hour: {e.currency} {e.title} at {e.when:%H:%M} UTC - "
+                  f"do not enter around it")
+
+    from .screenshot import verdict
+    _, head, text = verdict(an, f)
     s = an.signal
     if not s:
         print("\nno setup on the latest bar")
+        print(f"{head}: {text}")
         return
     action = "BUY" if s.side == "long" else "SELL"
     if s.confirmation == "break":
@@ -186,6 +256,7 @@ def _report(market: Market, args, money: MoneyManagement) -> None:
         plan.append(f"trail {what} from +{money.trail_start_r:g}R")
     if plan:
         print("  manage: " + ", ".join(plan))
+    print(f"{head}: {text}")
 
 
 def _backtest(market: Market, args, money: MoneyManagement):
@@ -224,8 +295,13 @@ def _watch(args, money: MoneyManagement) -> None:
         stamp = df.time.iloc[-1]
         if an.signal and stamp != last_signal_time:
             last_signal_time = stamp
+            _macro_cache.clear()   # fresh calendar and prices for each signal
+            f = _fundamentals(args, args.symbol, "day")
             print()
-            _report(market, args, money)
+            _report(market, args, money, f)
+            shots = _screenshots(market, args, args.symbol, Path(args.out), f"signal-{stamp:%Y%m%d-%H%M}-", f,
+                                 args.interval, f"signal {stamp:%d %b %H:%M}")
+            print("screenshots -> " + ", ".join(str(Path(args.out) / n) for _, n in shots))
             print("\a", end="", flush=True)
         else:
             print(f"{stamp:%Y-%m-%d %H:%M} {px(an.price)}  no setup", flush=True)
@@ -248,19 +324,21 @@ def _outlook(args, horizon: str, symbols: list[str], now: dt.datetime | None = N
     out_dir.mkdir(parents=True, exist_ok=True)
     now = now or dt.datetime.now(dt.timezone.utc)
     stamp = now.strftime("%Y-%m-%d")
-    outlooks, charts = [], {}
+    outlooks, shots, funds, verdicts = [], {}, {}, {}
+    from .screenshot import verdict
     for symbol in symbols:
         df = _load(args, symbol, spec["interval"], spec["count"])
         o = build_outlook(df, symbol, horizon, now)
+        f = _fundamentals(args, symbol, horizon, now)
         outlooks.append(o)
+        funds[symbol] = f
+        verdicts[symbol] = verdict(o.market.analyze(len(o.market.c) - 1), f)
         try:
-            from .plot import plot
-            name = f"{horizon}-{stamp}-{re.sub(r'[^A-Za-z0-9]+', '', symbol)}.png"
-            plot(o.market, str(out_dir / name), last=150 if horizon == "day" else 180)
-            charts[symbol] = name
-        except ImportError:
+            shots[symbol] = _screenshots(o.market, args, symbol, out_dir, f"{horizon}-{stamp}-", f,
+                                         spec["interval"], o.period, horizon)
+        except ImportError:   # matplotlib not installed: text report only
             pass
-    md = to_markdown(outlooks, horizon, charts)
+    md = to_markdown(outlooks, horizon, fundamentals=funds, screenshots=shots, verdicts=verdicts)
     path = out_dir / f"outlook-{horizon}-{stamp}.md"
     path.write_text(md, encoding="utf-8")
     print(md)
@@ -331,7 +409,15 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     market = Market(_load(args), _config(args))
-    result = _backtest(market, args, money) if args.command == "backtest" else _report(market, args, money)
+    result = None
+    if args.command == "backtest":
+        result = _backtest(market, args, money)
+    else:
+        f = _fundamentals(args, args.symbol, "day")
+        _report(market, args, money, f)
+        if args.screenshot:
+            shots = _screenshots(market, args, args.symbol, Path(args.screenshot), "", f, args.interval)
+            print("screenshots -> " + ", ".join(str(Path(args.screenshot) / n) for _, n in shots))
     if args.plot:
         from .plot import plot
         plot(market, args.plot, result, last=args.bars)
