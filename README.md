@@ -10,6 +10,10 @@ Sunday and a next-day outlook every evening**. It never places orders.
 
 > Educational code, not financial advice. Backtest and paper-trade before risking money.
 
+**MetaTrader 5 Expert Advisor:** the trading core is also available as an EA that runs inside MT5
+and places trades itself. See [`mql5/`](mql5/README.md). Compile it in MetaEditor, then test it in
+the Strategy Tester on Deriv's own prices and on a demo account.
+
 ## Modes
 
 | | `--mode scalp` | `--mode swing` |
