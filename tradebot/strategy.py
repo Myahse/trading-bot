@@ -32,7 +32,7 @@ import pandas as pd
 
 from .fractal import HigherTimeframe
 from .orderblocks import OrderBlock, find_order_blocks
-from .structure import Pivot, Trendline, TrendlineFinder, Zone, atr, px, find_pivots, market_bias, sr_zones
+from .structure import LevelBook, Pivot, Trendline, TrendlineFinder, Zone, atr, px, find_pivots, market_bias
 
 
 @dataclass
@@ -43,9 +43,8 @@ class StrategyConfig:
     zone_tolerance_atr: float = 0.6     # pivots within this many ATRs form one zone
     htf_zone_tolerance_atr: float = 0.3 # the same on the higher timeframe (its ATR is much bigger)
     zone_min_touches: int = 2
-    zone_lookback_pivots: int = 40      # only the most recent pivots build entry-chart zones
-    htf_zone_lookback: int = 0          # higher-timeframe swings used for its zones (0 = all history:
-                                        # old daily/weekly levels still matter)
+    zone_lookback_pivots: int = 40      # entry-chart zones kept (the most recently touched)
+    htf_zone_lookback: int = 0          # higher-timeframe zones kept (0 = 200: old daily/weekly levels matter)
     touch_buffer_atr: float = 0.25      # how close counts as "tagging" a level
     stop_buffer_atr: float = 0.3        # stop distance beyond the structure
     min_stop_atr: float = 0.0           # never place the stop closer than this many ATRs
@@ -146,6 +145,11 @@ class Market:
         self.order_blocks = find_order_blocks(self.df, self.pivots, self.atr, self.cfg.ob_displacement_atr)
         self.htf = HigherTimeframe(self.df, self.cfg.htf, self.cfg.htf_pivot, self.cfg.atr_period) \
             if self.cfg.htf else None
+        # zones with a memory: they change only when a new swing confirms
+        self.levels = LevelBook(self.pivots, self.atr, self.cfg.zone_tolerance_atr, self.cfg.zone_lookback_pivots,
+                                self.cfg.zone_min_touches)
+        self.htf_levels = LevelBook(self.htf.pivots, self.htf.atr_by_bar(len(self.c)), self.cfg.htf_zone_tolerance_atr,
+                                    self.cfg.htf_zone_lookback or 200, 2) if self.htf else None
         span = 2 * (self.cfg.pivot_left + self.cfg.pivot_right)
         self.lines = TrendlineFinder(self.h, self.l, self.c, self.atr, min_span=span)
         self.htf_lines = TrendlineFinder(
@@ -159,8 +163,7 @@ class Market:
         cfg, a, c = self.cfg, self.atr[t], self.c[t]
         ready = not np.isnan(a)
         pivots = self.pivots_known_at(t)
-        zones = sr_zones(pivots[-cfg.zone_lookback_pivots:], cfg.zone_tolerance_atr * a, cfg.zone_min_touches) \
-            if ready else []
+        zones = self.levels.at(t) if ready else []
         lines = self.lines.lines_at(t, pivots, cfg.retest_window) if ready else []
         obs = [ob for ob in self.order_blocks if ob.active_at(t) and t - ob.created_at <= cfg.ob_max_age]
 
@@ -171,8 +174,7 @@ class Market:
             lines += self.htf_lines.lines_at(t, hp, int(cfg.retest_window * self.htf.bars_per_candle))
             ha = self.htf.atr_known_at(t)
             if not np.isnan(ha):
-                recent = hp[-cfg.htf_zone_lookback:] if cfg.htf_zone_lookback > 0 else hp
-                htf_zones = sr_zones(recent, cfg.htf_zone_tolerance_atr * ha, 2)
+                htf_zones = self.htf_levels.at(t)
 
         def split(zs):
             return (sorted((z for z in zs if z.mid < c), key=lambda z: -z.mid),

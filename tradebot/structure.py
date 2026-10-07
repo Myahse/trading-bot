@@ -6,6 +6,7 @@ so the strategy can be evaluated bar by bar without looking into the future.
 
 from __future__ import annotations
 
+from bisect import bisect_right
 from dataclasses import dataclass, replace
 
 import numpy as np
@@ -79,6 +80,56 @@ def sr_zones(pivots: list[Pivot], tolerance: float, min_touches: int = 2) -> lis
 def _zone(cluster: list[float], tolerance: float) -> Zone:
     pad = max(tolerance / 4 - (cluster[-1] - cluster[0]) / 2, 0.0)  # keep a minimum zone width
     return Zone(cluster[0] - pad, cluster[-1] + pad, len(cluster))
+
+
+class LevelBook:
+    """Support/resistance zones with a memory, the way a trader keeps levels on the chart.
+
+    A zone is born from a swing, with its width fixed by the ATR at that swing. Later swings
+    at the same price add touches; they can widen the zone up to that width but never move it
+    anywhere else. Zones therefore change only when a new swing is confirmed, never just because
+    another candle closed or the ATR moved. Broken zones stay (support turns into resistance).
+    The `max_levels` zones touched most recently are kept.
+
+    Snapshots are taken at each swing confirmation, so `at(t)` only knows swings confirmed by t.
+    """
+
+    def __init__(self, pivots: list[Pivot], atr: np.ndarray, tol_atr: float, max_levels: int = 40,
+                 min_touches: int = 2):
+        self.min_touches = min_touches
+        self._bars: list[int] = []
+        self._snaps: list[tuple[Zone, ...]] = []
+        levels: list[list] = []          # [lo, hi, touches, last_touch, width_cap]
+        for p in sorted(pivots, key=lambda p: (p.confirmed_at, p.index)):
+            a = atr[p.index] if p.index < len(atr) else np.nan
+            if np.isnan(a) or a <= 0:
+                continue
+            tol = tol_atr * a
+            best, best_d = None, None
+            for lv in levels:
+                d = 0.0 if lv[0] <= p.price <= lv[1] else min(abs(p.price - lv[0]), abs(p.price - lv[1]))
+                if d <= lv[4] / 2 and (best_d is None or d < best_d):
+                    best, best_d = lv, d
+            if best is not None:
+                lo, hi = min(best[0], p.price), max(best[1], p.price)
+                if hi - lo <= best[4]:          # widen only up to the zone's own width
+                    best[0], best[1] = lo, hi
+                best[2] += 1
+                best[3] = p.index
+            else:
+                levels.append([p.price - tol / 4, p.price + tol / 4, 1, p.index, tol])
+                if len(levels) > max_levels:
+                    levels.remove(min(levels, key=lambda lv: lv[3]))
+            snap = tuple(Zone(lv[0], lv[1], lv[2]) for lv in levels if lv[2] >= min_touches)
+            if self._bars and self._bars[-1] == p.confirmed_at:
+                self._snaps[-1] = snap
+            else:
+                self._bars.append(p.confirmed_at)
+                self._snaps.append(snap)
+
+    def at(self, t: int) -> list[Zone]:
+        i = bisect_right(self._bars, t) - 1
+        return list(self._snaps[i]) if i >= 0 else []
 
 
 @dataclass(frozen=True)

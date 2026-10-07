@@ -27,7 +27,8 @@ It runs inside MT5 on a chart and places the trades itself.
    - trendlines: thick purple for the higher timeframe, dotted after a break
    - the nearest order blocks
    - swing labels (HH / HL / LH / LL)
-   - for a setup, the entry, SL and TP lines
+   - for a setup, the entry, SL and TP lines. A setup waiting for its confirmation stays on the chart
+     until it fills or is cancelled
 5. The top-left panel shows how the bot reads the market, step by step, and what it is waiting for.
 
 On a **real** account it only analyses and never sends an order, unless you set *Allow trading a
@@ -50,7 +51,7 @@ what the Python backtests showed. Tick *Visual mode* to watch it trade candle by
 
 | Part | Detail |
 |---|---|
-| Structure | Swing highs and lows (fractals), support/resistance zones (recent swings on the chart, **all history** on the higher timeframe), trendlines chosen from pairs of swings, order blocks, trend (HH/HL vs LH/LL) on the chart timeframe and on the higher timeframe |
+| Structure | Swing highs and lows (fractals), support/resistance zones **with a memory** (they change only when a new swing confirms, not on every candle; all history on the higher timeframe), trendlines chosen from pairs of swings, order blocks, trend (HH/HL vs LH/LL) on the chart timeframe and on the higher timeframe |
 | Setups | **Rejection:** price tags 2+ levels and closes back the other way. **Breakout:** a strong candle closes through a trendline. Both only in the higher-timeframe direction |
 | Confirmation | **Break:** enter when price trades through the signal candle's high/low within N candles, cancelled if the stop level trades first. **Close:** enter after a candle closes beyond it. **None:** enter at the next open |
 | Stop / target | The stop goes beyond the levels used (and at least `min stop ATR` away). The target is the nearest opposing level, or a default R. Setups below the minimum reward:risk are skipped. Both sit on the server |

@@ -275,37 +275,6 @@ int Bias(const Pivot &piv[], int np)
    return 0;
   }
 
-// Recent swings within `tol` of each other form a zone (min..max, with a minimum width).
-int BuildZones(const Pivot &piv[], int np, int lookback, double tol, int minTouches, Zone &out[])
-  {
-   ArrayResize(out, 0);
-   if(tol <= 0 || np <= 0) return 0;
-   int from = MathMax(0, np - lookback);
-   int m = np - from;
-   double prices[];
-   ArrayResize(prices, m);
-   for(int i = 0; i < m; i++) prices[i] = piv[from + i].price;
-   ArraySort(prices);
-   int k = 0, start = 0;
-   for(int i = 1; i <= m; i++)
-     {
-      if(i == m || prices[i] - prices[start] > tol)
-        {
-         int cnt = i - start;
-         if(cnt >= minTouches)
-           {
-            double lo = prices[start], hi = prices[i - 1];
-            double pad = MathMax(tol / 4.0 - (hi - lo) / 2.0, 0.0);
-            ArrayResize(out, k + 1);
-            out[k].lo = lo - pad; out[k].hi = hi + pad; out[k].touches = cnt;
-            k++;
-           }
-         start = i;
-        }
-     }
-   return k;
-  }
-
 // Zones below price are support (nearest first), above are resistance (nearest first).
 void SplitZones(const Zone &z[], double c, Zone &sup[], Zone &res[])
   {
@@ -324,6 +293,61 @@ void SplitZones(const Zone &z[], double c, Zone &sup[], Zone &res[])
    for(int i = 1; i < nr; i++)   // lowest resistance first
       for(int j = i; j > 0 && (res[j].lo + res[j].hi) < (res[j - 1].lo + res[j - 1].hi); j--)
         { Zone t = res[j]; res[j] = res[j - 1]; res[j - 1] = t; }
+  }
+
+// Zones with a memory (port of LevelBook): a zone is born from a swing with its width fixed by the
+// ATR at that swing; later swings at the same price add touches and may widen it up to that width,
+// never move it. So zones only change when a new swing confirms, not on every candle.
+void BuildLevels(const Pivot &piv[], int np, const double &atr[], double tolATR, int maxLevels, int minTouches,
+                 Zone &out[])
+  {
+   double lo[], hi[], cap[];
+   int touches[], last[];
+   int n = 0;
+   for(int i = 0; i < np; i++)
+     {
+      double a = atr[piv[i].index];
+      if(!Valid(a)) continue;
+      double p = piv[i].price, tol = tolATR * a;
+      int best = -1;
+      double bestD = 0;
+      for(int k = 0; k < n; k++)
+        {
+         double d = (lo[k] <= p && p <= hi[k]) ? 0.0 : MathMin(MathAbs(p - lo[k]), MathAbs(p - hi[k]));
+         if(d <= cap[k] / 2 && (best < 0 || d < bestD)) { best = k; bestD = d; }
+        }
+      if(best >= 0)
+        {
+         double nlo = MathMin(lo[best], p), nhi = MathMax(hi[best], p);
+         if(nhi - nlo <= cap[best]) { lo[best] = nlo; hi[best] = nhi; }
+         touches[best]++;
+         last[best] = piv[i].index;
+        }
+      else
+        {
+         ArrayResize(lo, n + 1); ArrayResize(hi, n + 1); ArrayResize(cap, n + 1);
+         ArrayResize(touches, n + 1); ArrayResize(last, n + 1);
+         lo[n] = p - tol / 4; hi[n] = p + tol / 4; cap[n] = tol; touches[n] = 1; last[n] = piv[i].index;
+         n++;
+         if(n > maxLevels)                        // forget the zone touched longest ago
+           {
+            int old = 0;
+            for(int k = 1; k < n; k++) if(last[k] < last[old]) old = k;
+            for(int k = old; k < n - 1; k++)
+              { lo[k] = lo[k + 1]; hi[k] = hi[k + 1]; cap[k] = cap[k + 1]; touches[k] = touches[k + 1]; last[k] = last[k + 1]; }
+            n--;
+           }
+        }
+     }
+   ArrayResize(out, 0);
+   int m = 0;
+   for(int k = 0; k < n; k++)
+      if(touches[k] >= minTouches)
+        {
+         ArrayResize(out, m + 1);
+         out[m].lo = lo[k]; out[m].hi = hi[k]; out[m].touches = touches[k];
+         m++;
+        }
   }
 
 bool Better(int t1, int l1, int s1, int t2, int l2, int s2)
@@ -512,7 +536,7 @@ bool Analyse()
    double c = R[t].close;
 
    Zone z[];
-   BuildZones(P, NP, C.zoneLookback, ZONE_TOL_ATR * A[t], 2, z);
+   BuildLevels(P, NP, A, ZONE_TOL_ATR, C.zoneLookback, 2, z);
    SplitZones(z, c, ZS, ZR);
    ArrayResize(L, 0);
    FindLines(R, N, P, NP, A, t, C.retest, 2 * (C.pivot + C.pivot), false, L);
@@ -532,8 +556,7 @@ bool Analyse()
          NPH = FindPivots(RH, NH, C.htfPivot, C.htfPivot, PH);
          biasH = Bias(PH, NPH);
          Zone hz[];
-         if(Valid(AH[NH - 1]))
-            BuildZones(PH, NPH, NPH, HTF_ZONE_TOL_ATR * AH[NH - 1], 2, hz);   // all history: old levels count
+         BuildLevels(PH, NPH, AH, HTF_ZONE_TOL_ATR, 200, 2, hz);   // all history: old levels count
          SplitZones(hz, c, HZS, HZR);
          FindLines(RH, NH, PH, NPH, AH, NH - 1, C.retest, 4 * C.htfPivot, true, LH);
         }
@@ -1111,16 +1134,20 @@ void Draw(const Signal &s, bool haveSignal)
          Text(PFX + "s" + IntegerToString(i), R[P[i].index].time, P[i].price, tag, clrGray, isHigh ? ANCHOR_LOWER : ANCHOR_UPPER);
      }
 
-   if(haveSignal)
+   Signal shown = s;
+   bool show = haveSignal;
+   if(armed) { shown = armedSig; show = true; }        // a waiting setup stays on the chart until filled/cancelled
+   if(show)
      {
-      double entry = (s.trigger > 0) ? s.trigger : s.entry;
+      Signal s2 = shown;
+      double entry = (s2.trigger > 0) ? s2.trigger : s2.entry;
       Segment(PFX + "entry", R[t].time, entry, right, entry, ink, 2, STYLE_DASH, false);
-      Segment(PFX + "sl", R[t].time, s.stop, right, s.stop, dn, 2, STYLE_SOLID, false);
-      Segment(PFX + "tp", R[t].time, s.target, right, s.target, up, 2, STYLE_SOLID, false);
-      string verb = (s.side == 1) ? "BUY" : "SELL";
-      Text(PFX + "entryT", right, entry, (s.trigger > 0 ? verb + " STOP " : verb + " ") + PS(entry), ink, ANCHOR_LEFT);
-      Text(PFX + "slT", right, s.stop, "SL " + PS(s.stop), dn, ANCHOR_LEFT);
-      Text(PFX + "tpT", right, s.target, StringFormat("TP %s  R:R %.1f", PS(s.target), s.rr), up, ANCHOR_LEFT);
+      Segment(PFX + "sl", R[t].time, s2.stop, right, s2.stop, dn, 2, STYLE_SOLID, false);
+      Segment(PFX + "tp", R[t].time, s2.target, right, s2.target, up, 2, STYLE_SOLID, false);
+      string verb = (s2.side == 1) ? "BUY" : "SELL";
+      Text(PFX + "entryT", right, entry, (s2.trigger > 0 ? verb + " STOP " : verb + " ") + PS(entry), ink, ANCHOR_LEFT);
+      Text(PFX + "slT", right, s2.stop, "SL " + PS(s2.stop), dn, ANCHOR_LEFT);
+      Text(PFX + "tpT", right, s2.target, StringFormat("TP %s  R:R %.1f", PS(s2.target), s2.rr), up, ANCHOR_LEFT);
      }
    ChartRedraw(0);
   }

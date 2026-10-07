@@ -134,8 +134,10 @@ def test_backtest_accounting_and_risk():
     assert res.stats["final_equity"] == pytest.approx(10_000 + sum(t.pnl for t in res.trades))
     for tr in res.trades:
         assert tr.exit_bar is not None and tr.exit_bar >= tr.entry_bar
-        if tr.exit_reason == "stop":   # a clean stop loses ~1% of equity at entry, never much more
+        if tr.exit_reason == "stop" and tr.partial_bar is None:   # a clean stop loses ~1%, never much more
             assert -0.0125 * 10_000 * 1.2 < tr.pnl < 0
+        if tr.exit_reason == "stop" and tr.partial_bar is not None:  # half banked at +1R, half lost at -1R
+            assert -1e-6 <= tr.r_multiple <= 0.5 + 1e-6
         sign = 1 if tr.side == "long" else -1
         assert sign * (tr.target - tr.entry) > 0 > sign * (tr.stop - tr.entry)
 
@@ -656,3 +658,41 @@ def test_paper_writes_journal_files(tmp_path):
     assert len(pd.read_csv(tmp_path / "candles.csv")) == len(PAPER_DF)
     summary = (tmp_path / "summary.md").read_text()
     assert "Balance" in summary and "Trades" in summary
+
+
+
+# -- stable levels --------------------------------------------------------------------------
+
+from tradebot.structure import LevelBook
+
+
+def test_levels_change_only_when_a_swing_confirms():
+    df = data.volatility_index(n=2000, seed=3)
+    m = Market(df, StrategyConfig())
+    confirmations = {p.confirmed_at for p in m.pivots}
+    prev = None
+    for t in range(300, 2000):
+        z = m.levels.at(t)
+        if prev is not None and z != prev:
+            assert t in confirmations          # never just because another candle closed
+        prev = z
+
+
+def test_level_keeps_its_place_when_touched_again():
+    atr = np.ones(100)
+    swings = [Pivot(10, 100.0, "low", 13), Pivot(30, 100.2, "low", 33), Pivot(50, 100.1, "high", 53)]
+    book = LevelBook(swings, atr, tol_atr=0.6)
+    assert book.at(20) == []                    # one touch is not a zone yet
+    (z1,) = book.at(40)
+    (z2,) = book.at(60)
+    assert (z1.touches, z2.touches) == (2, 3)
+    assert z2.low == z1.low and z2.high == z1.high   # a third touch inside the zone doesn't move it
+    assert z1.high - z1.low <= 0.6 + 1e-9
+
+
+def test_far_swing_starts_a_new_level_instead_of_moving_the_old_one():
+    atr = np.ones(100)
+    swings = [Pivot(10, 100.0, "low", 13), Pivot(20, 100.1, "low", 23), Pivot(40, 105.0, "high", 43),
+              Pivot(60, 105.2, "high", 63)]
+    zones = sorted(LevelBook(swings, atr, tol_atr=0.6).at(70), key=lambda z: z.low)
+    assert len(zones) == 2 and zones[0].high < 101 and zones[1].low > 104
