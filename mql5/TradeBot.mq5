@@ -8,7 +8,8 @@
 #property version   "1.00"
 #property description "Trades rejections from support/resistance zones, trendlines and order blocks,"
 #property description "and trendline breakouts, in the direction of the higher-timeframe structure."
-#property description "Confirmation entries, lot sizing from risk, partial profit, break-even, trailing stop,"
+#property description "Surgical entries on a lower-timeframe change of character, lot sizing from risk,"
+#property description "partial profit, break-even, trailing stop,"
 #property description "daily limits and a news filter. Refuses real accounts unless allowed."
 
 #include <Trade/Trade.mqh>
@@ -20,7 +21,8 @@ enum EPreset  { PRESET_SCALP = 0,   // Scalp: M5 chart, H1 structure
               };
 enum EConfirm { CONFIRM_BREAK = 0,  // Break of the signal candle's high/low
                 CONFIRM_CLOSE = 1,  // A candle closes beyond it
-                CONFIRM_NONE = 2    // None: enter at the next open
+                CONFIRM_NONE = 2,   // None: enter at the next open
+                CONFIRM_REFINE = 3  // Surgical: lower-timeframe change of character in the entry zone
               };
 enum ETrail   { TRAIL_NONE = 0,     // No trailing stop
                 TRAIL_ATR = 1,      // ATR behind the best price
@@ -37,8 +39,9 @@ input int      InpHTFPivot        = 3;              // Swing size on the higher 
 input int      InpMinConfluence   = 2;              // Levels that must be tagged together
 input double   InpMinRR           = 1.5;            // Minimum reward:risk
 input double   InpDefaultRR       = 1.5;            // Target in R when nothing is in the way
-input EConfirm InpConfirm         = CONFIRM_BREAK;  // Entry confirmation
+input EConfirm InpConfirm         = CONFIRM_REFINE; // Entry confirmation
 input int      InpConfirmBars     = 3;              // Candles the confirmation may take
+input ENUM_TIMEFRAMES InpRefineTF = PERIOD_M1;      // Lower timeframe for surgical entries
 input bool     InpTrendFilter     = true;           // Only trade with the higher-timeframe trend
 input bool     InpBreakouts       = true;           // Trade trendline breakouts
 input int      InpRetestBars      = 12;             // Bars a broken trendline stays valid for its retest
@@ -88,12 +91,15 @@ input bool     InpScreenshots     = true;           // Save a screenshot for eve
 #define LINE_WICK_ATR       0.1
 #define LINE_BREAK_ATR      0.1
 #define LINE_MAX_SLOPE_ATR  0.5
+#define REFINE_PIVOT        2      // bars each side of a lower-timeframe swing
+#define REFINE_STOP_BUF_ATR 0.3    // stop beyond the lower-timeframe swing, in lower-timeframe ATR
+#define REFINE_MIN_STOP_ATR 1.0    // never closer than this many lower-timeframe ATRs
 #define PFX                 "TB_"
 
 //--- data types
 struct Config
   {
-   ENUM_TIMEFRAMES   htf;
+   ENUM_TIMEFRAMES   htf, ltf;
    int               pivot, htfPivot, minConfluence, confirm, confirmBars, retest, cooldown, obMaxAge, zoneLookback;
    double            minRR, defaultRR, minStopATR;
    bool              trendFilter, breakouts;
@@ -107,7 +113,8 @@ struct Line   { int i1; double p1; int i2; double p2; int kind; int broken; int 
                                                                               // kind +1 rising support, -1 falling resistance
 struct OBlock { int kind; int index; double lo; double hi; int created; int invalid; }; // kind +1 bullish
 struct Tag    { string reason; double level; };
-struct Signal { int side; string setup; double entry; double stop; double target; double trigger; double rr; string reasons; };
+struct Signal { int side; string setup; double entry; double stop; double target; double trigger; double rr; string reasons;
+                double zoneLo; double zoneHi; };   // zone: where a surgical entry is looked for
 
 //--- state
 Config   C;
@@ -127,6 +134,7 @@ bool     armed = false;
 Signal   armedSig;
 int      armedBarsLeft = 0;
 datetime armedAt = 0;                                                         // the signal candle, where its box starts
+datetime lastLtfBar = 0;                                                      // lower-timeframe candle last checked
 
 //+------------------------------------------------------------------+
 //| Small helpers                                                    |
@@ -135,6 +143,7 @@ bool   Valid(double v)          { return v != EMPTY_VALUE && MathIsValidNumber(v
 double Px(double p)             { return NormalizeDouble(p, _Digits); }
 string PS(double p)             { return DoubleToString(p, _Digits); }
 string BiasName(int b)          { return b > 0 ? "up" : (b < 0 ? "down" : "neutral"); }
+string TFName(ENUM_TIMEFRAMES tf) { return StringSubstr(EnumToString(tf), 7); }   // PERIOD_M1 -> M1
 double LineAt(const Line &ln, double x) { return ln.p1 + (ln.p2 - ln.p1) / (ln.i2 - ln.i1) * (x - ln.i1); }
 
 int LotDigits(double step)
@@ -183,7 +192,7 @@ void LoadConfig()
   {
    // Custom: the inputs
    C.htf = InpHTF; C.pivot = InpPivot; C.htfPivot = InpHTFPivot; C.minConfluence = InpMinConfluence;
-   C.confirm = (int)InpConfirm; C.confirmBars = InpConfirmBars; C.retest = InpRetestBars; C.cooldown = InpCooldownBars;
+   C.confirm = (int)InpConfirm; C.confirmBars = InpConfirmBars; C.ltf = InpRefineTF; C.retest = InpRetestBars; C.cooldown = InpCooldownBars;
    C.obMaxAge = InpOBMaxAge; C.zoneLookback = InpZoneLookback; C.minRR = InpMinRR; C.defaultRR = InpDefaultRR;
    C.minStopATR = InpMinStopATR; C.trendFilter = InpTrendFilter; C.breakouts = InpBreakouts;
    C.riskPct = InpRiskPct; C.minLotMaxRisk = InpMinLotMaxRisk; C.beR = InpBreakevenR; C.partialR = InpPartialR;
@@ -192,7 +201,8 @@ void LoadConfig()
 
    if(InpPreset == PRESET_SCALP)
      {
-      C.htf = PERIOD_H1; C.pivot = 3; C.htfPivot = 3; C.minConfluence = 2; C.confirm = CONFIRM_BREAK; C.confirmBars = 3;
+      C.htf = PERIOD_H1; C.pivot = 3; C.htfPivot = 3; C.minConfluence = 2; C.confirm = CONFIRM_REFINE; C.confirmBars = 3;
+      C.ltf = PERIOD_M1;
       C.retest = 12; C.cooldown = 6; C.obMaxAge = 100; C.zoneLookback = 30; C.minRR = 1.5; C.defaultRR = 1.5;
       C.minStopATR = 1.0; C.trendFilter = true; C.breakouts = true;
       C.riskPct = 0.5; C.minLotMaxRisk = 5.0; C.beR = 1.0; C.partialR = 1.0; C.partialPct = 50.0;
@@ -200,7 +210,8 @@ void LoadConfig()
      }
    else if(InpPreset == PRESET_SWING)
      {
-      C.htf = PERIOD_D1; C.pivot = 5; C.htfPivot = 3; C.minConfluence = 2; C.confirm = CONFIRM_BREAK; C.confirmBars = 2;
+      C.htf = PERIOD_D1; C.pivot = 5; C.htfPivot = 3; C.minConfluence = 2; C.confirm = CONFIRM_REFINE; C.confirmBars = 2;
+      C.ltf = PERIOD_M15;
       C.retest = 15; C.cooldown = 3; C.obMaxAge = 150; C.zoneLookback = 40; C.minRR = 2.0; C.defaultRR = 2.5;
       C.minStopATR = 0.0; C.trendFilter = true; C.breakouts = true;
       C.riskPct = 1.0; C.minLotMaxRisk = 5.0; C.beR = 1.0; C.partialR = 1.5; C.partialPct = 50.0;
@@ -583,6 +594,7 @@ bool Finish(int side, string setup, double stop, string reasons, Signal &s)
   {
    int t = N - 1;
    double c = R[t].close, a = A[t];
+   double structure = stop + side * STOP_BUF_ATR * a;          // the level that was tagged, before buffer/floor
    double floorDist = C.minStopATR * a;
    stop = (side == 1) ? MathMin(stop, c - floorDist) : MathMax(stop, c + floorDist);
 
@@ -629,8 +641,8 @@ bool Finish(int side, string setup, double stop, string reasons, Signal &s)
       if(!have) target = c - C.defaultRR * (stop - c);
      }
 
-   double trigger = (C.confirm == CONFIRM_NONE) ? 0.0 : (side == 1 ? R[t].high : R[t].low);
-   double entry = (C.confirm == CONFIRM_NONE) ? c : trigger;   // judge reward:risk from the fill level
+   double trigger = (C.confirm == CONFIRM_NONE || C.confirm == CONFIRM_REFINE) ? 0.0 : (side == 1 ? R[t].high : R[t].low);
+   double entry = (trigger == 0.0) ? c : trigger;   // judge reward:risk from the fill level (refine: inside the zone)
    double risk = MathAbs(entry - stop);
    if(risk <= 0) return false;
    bool beyond = (side == 1) ? entry >= target : entry <= target;
@@ -638,6 +650,8 @@ bool Finish(int side, string setup, double stop, string reasons, Signal &s)
    if(beyond || rr < C.minRR) return false;
 
    s.side = side; s.setup = setup; s.entry = entry; s.stop = stop; s.target = target; s.trigger = trigger; s.rr = rr;
+   s.zoneLo = 0; s.zoneHi = 0;
+   if(C.confirm == CONFIRM_REFINE) { s.zoneLo = MathMin(structure, c); s.zoneHi = MathMax(structure, c); }
    s.reasons = reasons + "; " + (NH > 0 ? "HTF bias " + BiasName(biasH) : "bias " + BiasName(biasE));
    return true;
   }
@@ -934,14 +948,61 @@ bool OpenMarket(const Signal &s)
    return true;
   }
 
+// Surgical entry: once per closed lower-timeframe candle, look for a change of character - a close
+// through the last lower-timeframe swing against the trade (the last lower high, for a long). Enter
+// at market, stop just beyond the lowest low (highest high) since that swing. Port of tradebot/refine.py.
+void CheckRefine(const MqlTick &tick)
+  {
+   datetime b = iTime(_Symbol, C.ltf, 0);
+   if(b == 0 || b == lastLtfBar) return;
+   lastLtfBar = b;
+   MqlRates LR[];
+   double LA[];
+   Pivot LP[];
+   ArraySetAsSeries(LR, false);
+   int n = CopyRates(_Symbol, C.ltf, 1, 300, LR);             // closed candles, oldest first
+   if(n < 3 * ATR_PERIOD) return;
+   int j = n - 1;
+   if(LR[j].time < armedAt + PeriodSeconds(PERIOD_CURRENT)) return;   // still inside the signal candle
+   CalcATR(LR, n, LA);
+   if(!Valid(LA[j])) return;
+   int np = FindPivots(LR, n, REFINE_PIVOT, REFINE_PIVOT, LP);
+   int side = armedSig.side, sw = -1;
+   for(int i = np - 1; i >= 0; i--)                           // the latest swing known before candle j closed
+      if(LP[i].kind == side && LP[i].confirmed < j) { sw = i; break; }
+   if(sw < 0) return;
+   double level = LP[sw].price, c = LR[j].close, prev = LR[j - 1].close;
+   if(!(side == 1 ? (prev <= level && level < c) : (prev >= level && level > c))) return;
+
+   double stop = side == 1 ? LR[LP[sw].index].low : LR[LP[sw].index].high;
+   for(int k = LP[sw].index; k <= j; k++)
+      stop = side == 1 ? MathMin(stop, LR[k].low) : MathMax(stop, LR[k].high);
+   stop -= side * REFINE_STOP_BUF_ATR * LA[j];
+   double price = side == 1 ? tick.ask : tick.bid;
+   stop = side == 1 ? MathMin(stop, price - REFINE_MIN_STOP_ATR * LA[j]) : MathMax(stop, price + REFINE_MIN_STOP_ATR * LA[j]);
+   armed = false;
+   Signal r = armedSig;
+   r.entry = price; r.stop = stop;
+   r.rr = MathAbs(r.target - price) / MathAbs(price - stop);
+   if(side == 1 ? price >= r.target : price <= r.target)
+     { Journal("skipped", "price already at the target when the change of character came"); return; }
+   if(r.rr < C.minRR)
+     { Journal("skipped", StringFormat("refined reward:risk %.2f below %.1f", r.rr, C.minRR)); return; }
+   r.reasons += StringFormat("; %s change of character: close %s %s, stop %s instead of %s", TFName(C.ltf),
+                             side == 1 ? "above" : "below", PS(level), PS(stop), PS(armedSig.stop));
+   OpenMarket(r);
+  }
+
 // Confirmation: checked on every tick for "break", at each candle close for "close".
 void CheckArmedTick()
   {
-   if(!armed || armedSig.trigger <= 0 || C.confirm != CONFIRM_BREAK) return;
+   if(!armed || (C.confirm != CONFIRM_BREAK && C.confirm != CONFIRM_REFINE)) return;
    MqlTick tick;
    if(!SymbolInfoTick(_Symbol, tick)) return;
    if(armedSig.side == 1 ? tick.bid <= armedSig.stop : tick.ask >= armedSig.stop)
      { armed = false; Journal("order cancelled", "stop level traded before the confirmation"); return; }
+   if(C.confirm == CONFIRM_REFINE) { CheckRefine(tick); return; }
+   if(armedSig.trigger <= 0) return;
    if(armedSig.side == 1 ? tick.ask >= armedSig.trigger : tick.bid <= armedSig.trigger)
      {
       armed = false;
@@ -1225,8 +1286,20 @@ void Draw(const Signal &s, bool haveSignal)
       double entry = (s2.trigger > 0) ? s2.trigger : s2.entry;
       PositionBox(PFX + "setup", boxFrom, right, entry, s2.stop, s2.target, true);
       string verb = (s2.side == 1) ? "BUY" : "SELL";
-      Text(PFX + "entryT", right, entry, (s2.trigger > 0 ? verb + " STOP " : verb + " ") + PS(entry), ink, ANCHOR_LEFT);
-      Text(PFX + "slT", right, s2.stop, "SL " + PS(s2.stop), dn, ANCHOR_LEFT);
+      if(s2.zoneHi > s2.zoneLo)                              // surgical: the zone where the entry is looked for
+        {
+         color zc = C'42,120,214';
+         Rect(PFX + "zoneF", boxFrom, s2.zoneLo, right, s2.zoneHi, C'200,220,245', true, 1);
+         Rect(PFX + "zoneB", boxFrom, s2.zoneLo, right, s2.zoneHi, zc, false, 2);
+         Text(PFX + "zoneT", boxFrom, (s2.zoneLo + s2.zoneHi) / 2, "ENTRY ZONE - " + TFName(C.ltf) + " CHoCH", zc, ANCHOR_LEFT);
+         Text(PFX + "entryT", right, (s2.zoneLo + s2.zoneHi) / 2, verb + " ZONE " + PS(s2.zoneLo) + "-" + PS(s2.zoneHi), zc, ANCHOR_LEFT);
+         Text(PFX + "slT", right, s2.stop, "invalidation " + PS(s2.stop), dn, ANCHOR_LEFT);
+        }
+      else
+        {
+         Text(PFX + "entryT", right, entry, (s2.trigger > 0 ? verb + " STOP " : verb + " ") + PS(entry), ink, ANCHOR_LEFT);
+         Text(PFX + "slT", right, s2.stop, "SL " + PS(s2.stop), dn, ANCHOR_LEFT);
+        }
       Text(PFX + "tpT", right, s2.target, StringFormat("TP %s  R:R %.1f", PS(s2.target), s2.rr), up, ANCHOR_LEFT);
      }
    ChartRedraw(0);
@@ -1247,9 +1320,16 @@ void Panel(const Signal &s, bool haveSignal, string status)
    int obs = 0;
    for(int i = 0; i < ArraySize(OB); i++) if(OBActive(OB[i], t)) obs++;
    txt += StringFormat("5. Order blocks active: %d\n", obs);
-   if(haveSignal)
+   if(haveSignal && s.zoneHi > s.zoneLo)
+      txt += StringFormat("6. SETUP %s (%s): entry zone %s-%s on a %s change of character, invalidation %s, TP %s, R:R %.1f+\n   %s\n",
+                          s.side == 1 ? "LONG" : "SHORT", s.setup, PS(s.zoneLo), PS(s.zoneHi), TFName(C.ltf), PS(s.stop),
+                          PS(s.target), s.rr, s.reasons);
+   else if(haveSignal)
       txt += StringFormat("6. SETUP %s (%s): entry %s, SL %s, TP %s, R:R %.1f\n   %s\n", s.side == 1 ? "LONG" : "SHORT",
                           s.setup, PS(s.trigger > 0 ? s.trigger : s.entry), PS(s.stop), PS(s.target), s.rr, s.reasons);
+   else if(armed && armedSig.zoneHi > armedSig.zoneLo)
+      txt += StringFormat("6. Waiting for a %s change of character in the zone %s-%s (%d candles left)\n",
+                          TFName(C.ltf), PS(armedSig.zoneLo), PS(armedSig.zoneHi), armedBarsLeft);
    else if(armed)
       txt += StringFormat("6. Waiting for confirmation at %s (%d candles left)\n", PS(armedSig.trigger), armedBarsLeft);
    else
@@ -1273,6 +1353,8 @@ int OnInit()
       Alert("TradeBot: this is a REAL account and 'Allow trading a REAL account' is off - analysis only, no orders.");
    if(InpPreset == PRESET_SCALP && Period() != PERIOD_M5)
       Print("TradeBot: the Scalp preset is designed for M5 charts (this chart is ", EnumToString(Period()), ").");
+   if(C.confirm == CONFIRM_REFINE && PeriodSeconds(C.ltf) >= PeriodSeconds(PERIOD_CURRENT))
+      Print("TradeBot: the lower timeframe for surgical entries (", EnumToString(C.ltf), ") must be smaller than the chart's.");
    if(InpPreset == PRESET_SWING && Period() != PERIOD_H4)
       Print("TradeBot: the Swing preset is designed for H4 charts (this chart is ", EnumToString(Period()), ").");
    lastBar = 0;
@@ -1300,6 +1382,7 @@ void OnTick()
    string status = tradingPermitted ? "trading" : "analysis only (real account)";
    Signal s;
    s.side = 0; s.setup = ""; s.entry = 0; s.stop = 0; s.target = 0; s.trigger = 0; s.rr = 0; s.reasons = "";
+   s.zoneLo = 0; s.zoneHi = 0;
    bool haveSignal = Setup(1, s) || Setup(-1, s);
 
    if(tradingPermitted)
@@ -1325,10 +1408,16 @@ void OnTick()
             armedSig = s;
             armedAt = R[N - 1].time;
             armedBarsLeft = C.confirmBars;
-            Journal("order placed", StringFormat("%s %s: %s %s, SL %s, TP %s, R:R %.1f - %s",
-                                                 s.side == 1 ? "LONG" : "SHORT", s.setup,
-                                                 C.confirm == CONFIRM_BREAK ? "enter on a break of" : "enter after a close beyond",
-                                                 PS(s.trigger), PS(s.stop), PS(s.target), s.rr, s.reasons));
+            if(C.confirm == CONFIRM_REFINE)
+               Journal("order placed", StringFormat("%s %s: entry zone %s-%s, enter on a %s change of character; "
+                                                    "invalidation %s, TP %s, R:R at least %.1f - %s",
+                                                    s.side == 1 ? "LONG" : "SHORT", s.setup, PS(s.zoneLo), PS(s.zoneHi),
+                                                    TFName(C.ltf), PS(s.stop), PS(s.target), s.rr, s.reasons));
+            else
+               Journal("order placed", StringFormat("%s %s: %s %s, SL %s, TP %s, R:R %.1f - %s",
+                                                    s.side == 1 ? "LONG" : "SHORT", s.setup,
+                                                    C.confirm == CONFIRM_BREAK ? "enter on a break of" : "enter after a close beyond",
+                                                    PS(s.trigger), PS(s.stop), PS(s.target), s.rr, s.reasons));
             Screenshot("setup");
             CheckArmedTick();                               // price may already be through the trigger
            }

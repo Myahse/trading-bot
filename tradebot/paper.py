@@ -6,6 +6,7 @@ trailing stop, daily limits). Nothing is sent to a broker.
 
 Everything lives in one folder per run:
   candles.csv   every candle seen since the start (plus the warm-up history)
+  ltf.csv       the same for the lower timeframe, when entries are surgical (--confirm refine)
   meta.json     settings, the starting balance and where trading started
   events.log    one line per event: order placed / cancelled, filled, partial, stop moved, closed
   trades.csv    every trade so far
@@ -31,6 +32,7 @@ import numpy as np
 import pandas as pd
 
 from .backtest import Engine, _stats, BacktestResult
+from .data import DERIV_GRANULARITY
 from .money import MoneyManagement
 from .strategy import Market, StrategyConfig
 from .structure import px
@@ -49,6 +51,7 @@ class PaperTrader:
         self.screenshots, self.news_veto = screenshots, news_veto
         self.log = log or (lambda msg: print(msg, flush=True))
         self.df: pd.DataFrame | None = None
+        self.ltf: pd.DataFrame | None = None     # lower-timeframe candles for surgical entries
         self.engine: Engine | None = None
         self.logged = 0            # events already written to events.log
         self.done = -1             # last candle processed
@@ -72,6 +75,9 @@ class PaperTrader:
                                  f"or --reset to start a fresh paper account.")
             self.df = pd.read_csv(candles_path, parse_dates=["time"])
             self.df["time"] = pd.to_datetime(self.df["time"], utc=True)
+            if self._refine and (self.folder / "ltf.csv").exists():
+                self.ltf = pd.read_csv(self.folder / "ltf.csv", parse_dates=["time"])
+                self.ltf["time"] = pd.to_datetime(self.ltf["time"], utc=True)
             start = int(meta["start"])
             self.logged = int(meta.get("logged", 0))
             self.log(f"resuming paper account in {self.folder} (started {self.df.time.iloc[start]:%d %b %H:%M} UTC), "
@@ -82,9 +88,11 @@ class PaperTrader:
             meta_path.write_text(json.dumps({"fingerprint": self._fingerprint(), "start": start, "logged": 0,
                                              "settings": self._settings()}, indent=2, default=str))
             self.df.to_csv(candles_path, index=False)
+            if self._refine:
+                self._fetch_ltf(self.history)
             self.log(f"new paper account: {self.equity:,.2f} USD on {self.symbol} {self.interval} "
                      f"(warm-up {len(self.df)} candles) -> {self.folder}")
-        market = Market(self.df, self.cfg)
+        market = Market(self.df, self.cfg, self.ltf)
         self.engine = Engine(market, self.mm, self.equity, self.fee_bps, self.spread, start)
         self.vetoed: dict[str, str] = json.loads(meta_path.read_text()).get("vetoed", {})
         self.replaying = True
@@ -117,12 +125,40 @@ class PaperTrader:
             return 0
         self.df = pd.concat([self.df, new], ignore_index=True)
         new.to_csv(self.folder / "candles.csv", mode="a", header=False, index=False)
-        self.engine.market = Market(self.df, self.cfg)
+        if self._refine:
+            self._fetch_ltf(len(new) + 5)
+        self.engine.market = Market(self.df, self.cfg, self.ltf)
         for t in range(self.done + 1, len(self.df)):
             self.engine.step(t, allow_last=True)
         self.done = len(self.df) - 1
         self._flush()
         return len(new)
+
+    @property
+    def _refine(self) -> bool:
+        return self.cfg.confirmation == "refine" and bool(self.cfg.ltf)
+
+    def _fetch_ltf(self, entry_candles: int, tries: int = 3) -> None:
+        """Lower-timeframe candles up to the end of the last entry candle, appended to ltf.csv.
+        Without them a setup falls back to a break entry, so wait a little for the last ones."""
+        ratio = max(1, DERIV_GRANULARITY.get(self.interval, 300) // DERIV_GRANULARITY.get(self.cfg.ltf, 60))
+        step = pd.Timedelta(seconds=DERIV_GRANULARITY.get(self.cfg.ltf, 60))
+        need = self.df.time.iloc[-1] + pd.Timedelta(seconds=self.step_seconds) - step   # last one inside it
+        for attempt in range(tries):
+            try:
+                fresh = self.feed(self.symbol, self.cfg.ltf, int(min(entry_candles * ratio + 10, 50_000)))
+            except (SystemExit, Exception) as exc:
+                self.log(f"{self.cfg.ltf} candles unavailable ({exc}) - break entries until they are back")
+                return
+            last = self.ltf.time.iloc[-1] if self.ltf is not None and len(self.ltf) else None
+            new = fresh if last is None else fresh[fresh.time > last]
+            if len(new):
+                self.ltf = new.reset_index(drop=True) if last is None else pd.concat([self.ltf, new], ignore_index=True)
+                new.to_csv(self.folder / "ltf.csv", mode="a", header=last is None, index=False)
+            if len(self.ltf) and self.ltf.time.iloc[-1] >= need:
+                return
+            if attempt < tries - 1:
+                time.sleep(3)
 
     def run(self, sleep: Callable[[float], None] = time.sleep) -> None:
         self.bootstrap()
@@ -201,7 +237,9 @@ class PaperTrader:
                       f"({p.stop_kind}), target {px(p.target)}"]
         elif e.order is not None:
             s = e.order.signal
-            lines += [f"- **Pending** {s.side} order at {px(s.trigger or s.entry)}, stop {px(s.stop)}, "
+            at = f"zone {px(s.zone[0])}-{px(s.zone[1])} (waiting for the lower-timeframe CHoCH)" \
+                if s.zone is not None else px(s.trigger or s.entry)
+            lines += [f"- **Pending** {s.side} order at {at}, stop {px(s.stop)}, "
                       f"target {px(s.target)}"]
         if closed:
             by_day: dict = {}
@@ -227,7 +265,9 @@ class PaperTrader:
 def describe(e: dict) -> str:
     kind, side = e["event"], e.get("side", "")
     if kind == "order placed":
-        how = f"stop order at {px(e['trigger'])}" if e.get("trigger") is not None else f"at the open ~{px(e['entry'])}"
+        how = f"entry zone {px(e['zone'][0])}-{px(e['zone'][1])}, waiting for a lower-timeframe CHoCH" \
+            if e.get("zone") else f"stop order at {px(e['trigger'])}" if e.get("trigger") is not None \
+            else f"at the open ~{px(e['entry'])}"
         return (f"ORDER {side.upper()} ({e['setup']}) {how}, SL {px(e['stop'])}, TP {px(e['target'])}, "
                 f"R:R {e['rr']:.1f} - {'; '.join(e['reasons'])}")
     if kind == "order cancelled":

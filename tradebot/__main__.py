@@ -56,9 +56,12 @@ def _parser() -> argparse.ArgumentParser:
     g.add_argument("--pivot", type=int, help="bars each side of a swing point")
     g.add_argument("--min-confluence", type=int)
     g.add_argument("--min-rr", type=float)
-    g.add_argument("--confirm", choices=["break", "close", "none"],
-                   help="break: enter when price breaks the signal candle (default); close: after a candle "
-                        "closes beyond it; none: next open")
+    g.add_argument("--confirm", choices=["refine", "break", "close", "none"],
+                   help="refine: surgical entry on a lower-timeframe change of character inside the entry "
+                        "zone (default in the modes); break: when price breaks the signal candle; close: after "
+                        "a candle closes beyond it; none: next open")
+    g.add_argument("--ltf", help="lower timeframe for --confirm refine: 1m (scalp default), 15m (swing default)")
+    g.add_argument("--ltf-csv", help="lower-timeframe candles csv, for --csv backtests with --confirm refine")
     g.add_argument("--confirm-bars", type=int, help="candles the confirmation may take")
     g.add_argument("--no-trend-filter", action="store_true")
     g.add_argument("--no-breakouts", action="store_true", help="don't trade trendline breaks")
@@ -112,11 +115,13 @@ def _config(args) -> StrategyConfig:
     base = dict(MODES[args.mode]["config"]) if args.mode else {}
     for key, value in (("min_confluence", args.min_confluence), ("min_rr", args.min_rr), ("htf", args.htf),
                        ("pivot_left", args.pivot), ("pivot_right", args.pivot),
-                       ("confirmation", args.confirm), ("confirm_bars", args.confirm_bars)):
+                       ("confirmation", args.confirm), ("confirm_bars", args.confirm_bars), ("ltf", args.ltf)):
         if value is not None:
             base[key] = value
     if args.htf == "none":
         base["htf"] = None
+    if base.get("confirmation") == "refine" and not base.get("ltf"):
+        base["ltf"] = "1m"
     if args.no_trend_filter:
         base["trend_filter"] = False
     if args.no_breakouts:
@@ -156,6 +161,43 @@ def _load(args, symbol: str | None = None, interval: str | None = None, count: i
     vol = re.search(r"(10|25|50|75|100)", symbol or "")   # sim: V75 -> 75% volatility
     return data.volatility_index(n=count, vol=int(vol[1]) / 100 if vol else 0.75,
                                  bar_seconds=data.DERIV_GRANULARITY.get(interval, 300), seed=args.seed)
+
+
+def _load_market(args, cfg: StrategyConfig) -> Market:
+    """Entry candles, plus the lower-timeframe candles a surgical ("refine") entry needs."""
+    if cfg.confirmation != "refine":
+        return Market(_load(args), cfg)
+    if args.source == "sim" and not args.csv:   # simulate the lower timeframe and build the entry candles from it
+        from .refine import resample
+        ratio = _ratio(args.interval, cfg.ltf)
+        ltf = _load(args, interval=cfg.ltf, count=args.count * ratio)
+        return Market(resample(ltf, data.DERIV_GRANULARITY[args.interval]), cfg, ltf)
+    df = _load(args)
+    return Market(df, cfg, _load_ltf(args, cfg, len(df)))
+
+
+def _ratio(interval: str, ltf: str) -> int:
+    entry, low = data.DERIV_GRANULARITY.get(interval), data.DERIV_GRANULARITY.get(ltf)
+    if not entry or not low or entry % low or entry <= low:
+        raise SystemExit(f"--ltf {ltf} must be a smaller timeframe that divides --interval {interval}")
+    return entry // low
+
+
+def _load_ltf(args, cfg: StrategyConfig, bars: int, symbol: str | None = None) -> pd.DataFrame | None:
+    """Lower-timeframe candles covering the entry candles, or None (refine then falls back to "break")."""
+    try:
+        if args.ltf_csv:
+            return data.load_csv(args.ltf_csv)
+        if args.csv:
+            print("note: --confirm refine needs --ltf-csv with lower-timeframe candles; using break entries")
+            return None
+        ratio = _ratio(args.interval, cfg.ltf)
+        if args.source == "yahoo":   # Yahoo keeps 1m candles for 7 days, 2m-30m for 60 days
+            return data.load_yahoo(symbol or args.symbol, cfg.ltf, "7d" if cfg.ltf == "1m" else "60d")
+        return data.load_deriv(symbol or args.symbol, cfg.ltf, min(bars * ratio, 200_000), args.app_id)
+    except SystemExit as exc:
+        print(f"note: no {cfg.ltf} candles ({exc}); using break entries")
+        return None
 
 
 TF_NAMES = {"D": "daily", "W": "weekly", "1h": "1h", "4h": "4h", "15min": "15m"}
@@ -248,7 +290,15 @@ def _report(market: Market, args, money: MoneyManagement, f=None) -> None:
         print(f"{head}: {text}")
         return
     action = "BUY" if s.side == "long" else "SELL"
-    if s.confirmation == "break":
+    if s.confirmation == "refine":
+        ltf = market.cfg.ltf
+        way = "above the last lower high" if s.side == "long" else "below the last higher low"
+        how = (f"{action} ZONE {px(s.zone[0])}-{px(s.zone[1])}: wait for a {ltf} candle to close {way} "
+               f"(change of character) within {market.cfg.confirm_bars} candles, stop just beyond that {ltf} swing; "
+               f"cancel if price reaches {px(s.stop)} first")
+        if market.ltf is None:
+            how += f" [no {ltf} candles loaded: the bot itself would use a {action} STOP at {px(s.trigger)}]"
+    elif s.confirmation == "break":
         how = f"{action} STOP at {px(s.trigger)} (valid {market.cfg.confirm_bars} candles; cancel if price " \
               f"reaches {px(s.stop)} first)"
     elif s.confirmation == "close":
@@ -257,9 +307,16 @@ def _report(market: Market, args, money: MoneyManagement, f=None) -> None:
     else:
         how = f"{action} at the next open (~{px(s.entry)})"
     print(f"\nSIGNAL {s.side.upper()} ({s.setup}): {how}")
-    print(f"  stop {px(s.stop)}   target {px(s.target)}   R:R {s.rr:.2f}")
+    if s.confirmation == "refine":
+        print(f"  invalidation {px(s.stop)}   target {px(s.target)}   R:R at least {s.rr:.2f} "
+              f"(higher once the {market.cfg.ltf} stop is known)")
+    else:
+        print(f"  stop {px(s.stop)}   target {px(s.target)}   R:R {s.rr:.2f}")
     print("  because: " + "; ".join(s.reasons))
 
+    if s.confirmation == "refine":
+        print(f"  size: set from the {market.cfg.ltf} stop when the entry comes (the lot size below is the "
+              f"smallest - for a stop at the invalidation)")
     try:
         pos = position(money, args.equity, s.entry, s.stop)
     except ValueError as exc:   # a cross without --quote-rate
@@ -290,6 +347,14 @@ def _report(market: Market, args, money: MoneyManagement, f=None) -> None:
 def _backtest(market: Market, args, money: MoneyManagement):
     if args.spread == 0 and args.fee_bps == 0:
         print("note: no trading costs set - pass --spread from your MT5 symbol specification")
+    if market.cfg.confirmation == "refine":
+        ltf = market.ltf
+        if ltf is None:
+            print(f"entries: break of the signal candle (no {market.cfg.ltf} candles)")
+        else:
+            covered = sum(ltf.covers(t) for t in range(len(market.c)))
+            print(f"entries: surgical, on {market.cfg.ltf} changes of character - {market.cfg.ltf} candles cover "
+                  f"{covered / len(market.c):.0%} of the entry candles (break entries elsewhere)")
     result = run_backtest(market.df, money=money, initial_equity=args.equity, fee_bps=args.fee_bps,
                           spread=args.spread, market=market)
     st = result.stats
@@ -347,9 +412,10 @@ def _live_feed(args):
         if args.source == "deriv":
             return data.load_deriv(symbol, interval, count, args.app_id)
         if args.source == "yahoo":
-            period = "60d" if step < 3600 else "730d"
+            seconds = data.DERIV_GRANULARITY[interval]   # the entry or the lower timeframe
+            period = "7d" if seconds == 60 else "60d" if seconds < 3600 else "730d"
             df = data.load_yahoo(symbol, interval, period)
-            closed = df[df.time + pd.Timedelta(seconds=step) <= pd.Timestamp.now(tz="UTC")]   # drop the forming one
+            closed = df[df.time + pd.Timedelta(seconds=seconds) <= pd.Timestamp.now(tz="UTC")]   # drop the forming one
             return closed.tail(count).reset_index(drop=True)
         raise SystemExit("paper trading needs live prices: --source deriv (or yahoo for gold/forex)")
     return feed, step
@@ -515,7 +581,7 @@ def main(argv: list[str] | None = None) -> None:
         _download(args)
         return
 
-    market = Market(_load(args), _config(args))
+    market = _load_market(args, _config(args))
     result = None
     if args.command == "backtest":
         result = _backtest(market, args, money)

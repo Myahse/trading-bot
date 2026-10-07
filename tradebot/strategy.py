@@ -20,7 +20,9 @@ is in the way. Trades below `min_rr` are skipped.
 Confirmation (`confirmation`): by default a setup is only entered once price breaks the
 signal candle's high (long) / low (short) within `confirm_bars` bars - a buy/sell stop.
 "close" waits for a candle to close beyond that level and enters at the next open;
-"none" enters at the next open straight away.
+"none" enters at the next open straight away. "refine" is the surgical entry: the setup
+marks an entry zone, and the trade is entered on a lower-timeframe change of character
+inside it, with a lower-timeframe stop (see refine.py).
 """
 
 from __future__ import annotations
@@ -63,7 +65,12 @@ class StrategyConfig:
     confirmation: str = "break"         # "break": enter when price breaks the signal candle's high (long)
                                         # "close": enter after a candle closes beyond it
                                         # "none": enter at the next open
+                                        # "refine": enter on a lower-timeframe change of character (needs ltf)
     confirm_bars: int = 3               # bars the confirmation may take before the setup is cancelled
+    ltf: str | None = None              # lower timeframe for "refine", e.g. "1m" (data is loaded separately)
+    refine_pivot: int = 2               # bars each side of a lower-timeframe swing
+    refine_stop_buffer_atr: float = 0.3 # stop beyond the lower-timeframe swing, in lower-timeframe ATR
+    refine_min_stop_atr: float = 1.0    # never closer than this many lower-timeframe ATRs (spread, noise)
 
 
 MODES: dict[str, dict] = {
@@ -71,7 +78,7 @@ MODES: dict[str, dict] = {
     "scalp": dict(interval="5m", count=20_000, period="60d",
                   config=dict(htf="1h", pivot_left=3, pivot_right=3, htf_pivot=3, zone_lookback_pivots=30,
                               ob_max_age=100, min_rr=1.5, default_rr=1.5, retest_window=12, cooldown_bars=6,
-                              min_stop_atr=1.0, confirmation="break", confirm_bars=3),
+                              min_stop_atr=1.0, confirmation="refine", ltf="1m", confirm_bars=3),
                   money=dict(risk_per_trade=0.005, breakeven_r=1.0, partial_r=1.0, partial_pct=0.5,
                              trail="atr", trail_start_r=1.0, trail_atr=1.5, max_daily_loss=0.03,
                              max_trades_per_day=8)),
@@ -79,7 +86,7 @@ MODES: dict[str, dict] = {
     "swing": dict(interval="4h", count=5_000, period="730d",
                   config=dict(htf="D", pivot_left=5, pivot_right=5, htf_pivot=3, zone_lookback_pivots=40,
                               ob_max_age=150, min_rr=2.0, default_rr=2.5, retest_window=15, cooldown_bars=3,
-                              confirmation="break", confirm_bars=2),
+                              confirmation="refine", ltf="15m", confirm_bars=2),
                   money=dict(risk_per_trade=0.01, breakeven_r=1.0, partial_r=1.5, partial_pct=0.5,
                              trail="swing", trail_start_r=1.5, max_daily_loss=None)),
 }
@@ -105,6 +112,8 @@ class Signal:
     reasons: list[str] = field(default_factory=list)
     trigger: float | None = None   # level price must break/close beyond to confirm (None: no confirmation)
     confirmation: str = "none"
+    zone: tuple[float, float] | None = None   # "refine": (low, high) of the entry zone - from the structure
+                                              # that was tagged to the signal close
 
     @property
     def rr(self) -> float:
@@ -135,9 +144,14 @@ class Analysis:
 class Market:
     """Precomputes everything once, then answers 'what is known at bar t?'."""
 
-    def __init__(self, df: pd.DataFrame, cfg: StrategyConfig | None = None):
+    def __init__(self, df: pd.DataFrame, cfg: StrategyConfig | None = None, ltf: pd.DataFrame | None = None):
         self.cfg = cfg or StrategyConfig()
         self.df = df.reset_index(drop=True)
+        # lower-timeframe candles for surgical entries (refine.py); None: refine falls back to "break"
+        self.ltf = None
+        if ltf is not None and len(ltf) and "time" in self.df.columns:
+            from .refine import LowerTimeframe
+            self.ltf = LowerTimeframe(ltf, self.df["time"], self.cfg.refine_pivot, self.cfg.atr_period)
         self.o, self.h, self.l, self.c = (self.df[k].to_numpy(float) for k in ("open", "high", "low", "close"))
         self.atr = atr(self.df, self.cfg.atr_period).to_numpy()
         self.pivots = find_pivots(self.df, self.cfg.pivot_left, self.cfg.pivot_right)
@@ -272,6 +286,7 @@ class Market:
 
     def _finish(self, side: str, setup: str, t: int, an: Analysis, stop: float, reasons: list[str]) -> Signal | None:
         c, floor = self.c[t], self.cfg.min_stop_atr * an.atr
+        structure = stop + (1 if side == "long" else -1) * self.cfg.stop_buffer_atr * an.atr   # before buffer/floor
         stop = min(stop, c - floor) if side == "long" else max(stop, c + floor)
         if side == "long":
             obstacles = [z.low for z in an.resistance + an.htf_resistance if z.low > c]
@@ -289,8 +304,13 @@ class Market:
         confirm = self.cfg.confirmation
         trigger = None if confirm == "none" else float(self.h[t] if side == "long" else self.l[t])
         # With confirmation the fill is at (or beyond) the trigger, so judge reward:risk from there.
-        entry = float(c) if trigger is None else trigger
-        signal = Signal(side, setup, t, entry, float(stop), float(target), reasons + [trend], trigger, confirm)
+        # A refined entry comes inside the zone, at or better than the close (the trigger is only
+        # the fallback when there are no lower-timeframe candles).
+        entry = float(c) if trigger is None or confirm == "refine" else trigger
+        zone = None
+        if confirm == "refine":   # from the structure that was tagged to the close
+            zone = (float(min(structure, c)), float(max(structure, c)))
+        signal = Signal(side, setup, t, entry, float(stop), float(target), reasons + [trend], trigger, confirm, zone)
         beyond_target = (entry >= target) if side == "long" else (entry <= target)
         return signal if not beyond_target and signal.rr >= self.cfg.min_rr else None
 

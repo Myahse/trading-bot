@@ -27,6 +27,8 @@ It runs inside MT5 on a chart and places the trades itself.
    - trendlines: thick purple for the higher timeframe, dotted after a break
    - the nearest order blocks
    - swing labels (HH / HL / LH / LL)
+   - for a surgical setup, the blue **entry zone** where the EA waits for the lower-timeframe
+     change of character
    - for a setup, a TradingView-style position box: green from the entry to the take-profit (where
      to get out with a profit), red from the entry to the stop-loss (where to get out with a loss),
      labelled with the distance in % and R. A setup waiting for its confirmation stays on the chart
@@ -46,7 +48,8 @@ REAL account* to `true`. Keep it on demo until weeks of results justify more.
 - **Expert:** TradeBot
 - **Symbol:** for example *Volatility 75 Index*, XAUUSD or GBPJPY
 - **Timeframe:** M5 (Scalp) or H4 (Swing)
-- **Modelling:** *Every tick based on real ticks* (most realistic) or *Every tick*
+- **Modelling:** *Every tick based on real ticks* (most realistic) or *Every tick*. Surgical entries
+  read M1 candles, so don't use *Open prices only*
 - **Deposit:** your real amount, e.g. 20 USD; **Leverage:** your account's
 
 The tester uses Deriv's prices, spreads and contract specifications, so these are the backtests that
@@ -59,7 +62,7 @@ what the Python backtests showed. Tick *Visual mode* to watch it trade candle by
 |---|---|
 | Structure | Swing highs and lows (fractals), support/resistance zones **with a memory** (they change only when a new swing confirms, not on every candle; all history on the higher timeframe), trendlines chosen from pairs of swings, order blocks, trend (HH/HL vs LH/LL) on the chart timeframe and on the higher timeframe |
 | Setups | **Rejection:** price tags 2+ levels and closes back the other way. **Breakout:** a strong candle closes through a trendline. Both only in the higher-timeframe direction |
-| Confirmation | **Break:** enter when price trades through the signal candle's high/low within N candles, cancelled if the stop level trades first. **Close:** enter after a candle closes beyond it. **None:** enter at the next open |
+| Confirmation | **Surgical** (default): the setup marks an entry zone. On each closed M1 candle (M15 for Swing) the EA looks for a change of character: a close through the last lower-timeframe swing against the trade. It enters at market with the stop just beyond that swing (at least 1 lower-timeframe ATR away), so the lot size comes from a much tighter stop. It is cancelled if the setup's stop level trades first or after N candles. **Break:** enter when price trades through the signal candle's high/low within N candles, cancelled if the stop level trades first. **Close:** enter after a candle closes beyond it. **None:** enter at the next open |
 | Stop / target | The stop goes beyond the levels used (and at least `min stop ATR` away). The target is the nearest opposing level, or a default R. Setups below the minimum reward:risk are skipped. Both sit on the server |
 | Size | Risk % of the balance, from MT5's tick value (correct for any symbol, JPY crosses included). If the minimum lot would risk more than the limit, or margin is short, the trade is skipped |
 | Management | Partial profit at +1R (lots permitting), stop to break-even, trailing stop (ATR behind the best price, or behind each new swing). Stops only tighten |
@@ -74,7 +77,7 @@ what the Python backtests showed. Tick *Visual mode* to watch it trade candle by
 | Chart / higher timeframe | M5 / H1 | H4 / D1 |
 | Swing size (chart / HTF) | 3 / 3 | 5 / 3 |
 | Min reward:risk / default target | 1.5 / 1.5R | 2.0 / 2.5R |
-| Confirmation | break, 3 candles | break, 2 candles |
+| Confirmation | surgical on M1, 3 candles | surgical on M15, 2 candles |
 | Risk per trade | 0.5% | 1% |
 | Partial / break-even / trail | 50% at 1R / 1R / 1.5 ATR from 1R | 50% at 1.5R / 1R / swings from 1.5R |
 | Daily limits | -3%, 8 trades | off |

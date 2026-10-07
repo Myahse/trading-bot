@@ -8,6 +8,8 @@ setup, its entry, stop-loss and take-profit - not every level ever detected.
 Setups and trades are drawn like TradingView's long/short position tool: a green box from
 the entry to the take-profit (where to get out with a profit) and a red box from the entry
 to the stop-loss (where to get out with a loss), starting at the candle where the trade begins.
+A surgical ("refine") setup also gets a blue entry zone: the trade is taken inside it, on a
+lower-timeframe change of character, with a much tighter stop than the box shows.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ from .strategy import Analysis, Market
 from .structure import Pivot, px
 
 UP, DOWN, LINE, HTF = "#2a9d8f", "#e76f51", "#264653", "#6d597a"
+ZONE = "#2a78d6"   # entry zone of a surgical ("refine") setup
 INK, MUTED, SURFACE = "#0b0b0b", "#52514e", "#fcfcfb"
 
 
@@ -164,12 +167,24 @@ def draw_entry(ax, market: Market, an: Analysis, last: int = 300, result: Backte
                         ha="center", va="bottom" if above else "top", fontsize=7, color=MUTED, zorder=6)
 
     if s is not None:
-        entry = s.trigger if s.trigger is not None else s.entry
-        position_box(ax, n - 0.5, right, entry, s.stop, s.target)
         verb = "BUY" if s.side == "long" else "SELL"
-        order = {"break": f"{verb} STOP", "close": f"{verb} on close", "none": verb}[s.confirmation]
-        labels.add(entry, f"{order} {px(entry)}", INK)
-        labels.add(s.stop, f"SL {px(s.stop)}", DOWN)
+        if s.confirmation == "refine" and s.zone is not None:
+            entry = s.entry
+            position_box(ax, n - 0.5, right, entry, s.stop, s.target)
+            z0, z1 = s.zone
+            ax.add_patch(Rectangle((n - 0.5, z0), right - n + 0.5, z1 - z0, facecolor=ZONE, alpha=0.22,
+                                   edgecolor=ZONE, linewidth=1.2, hatch="..", zorder=3))
+            ax.annotate(f"ENTRY ZONE - {market.cfg.ltf} CHoCH", (n - 0.5, (z0 + z1) / 2), xytext=(3, 0),
+                        textcoords="offset points", ha="left", va="center", fontsize=7, fontweight="bold",
+                        color=ZONE, zorder=7)
+            labels.add((z0 + z1) / 2, f"{verb} ZONE {px(z0)}-{px(z1)}", ZONE)
+            labels.add(s.stop, f"invalidation {px(s.stop)}", DOWN)
+        else:
+            entry = s.trigger if s.trigger is not None else s.entry
+            position_box(ax, n - 0.5, right, entry, s.stop, s.target)
+            order = {"break": f"{verb} STOP", "close": f"{verb} on close", "none": verb}[s.confirmation]
+            labels.add(entry, f"{order} {px(entry)}", INK)
+            labels.add(s.stop, f"SL {px(s.stop)}", DOWN)
         labels.add(s.target, f"TP {px(s.target)}  R:R {s.rr:.1f}", UP)
         ax.scatter(an.bar, market.c[an.bar], marker="^" if s.side == "long" else "v", s=90,
                    color=UP if s.side == "long" else DOWN, edgecolors="white", zorder=7)

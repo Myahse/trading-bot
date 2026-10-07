@@ -22,7 +22,7 @@ the Strategy Tester on Deriv's own prices and on a demo account.
 | Structure / trend from | 1h candles | daily candles |
 | Swing size | 3 bars each side | 5 bars each side |
 | Minimum reward:risk | 1.5 | 2.0 |
-| Confirmation | break of the signal candle within 3 candles | break within 2 candles |
+| Entry | **surgical**: 1m change of character in the entry zone, within 3 candles | surgical on 15m, within 2 candles |
 | Risk per trade | 0.5% | 1% |
 | Partial profit | 50% at +1R | 50% at +1.5R |
 | Break-even | at +1R | at +1R |
@@ -68,17 +68,53 @@ For both setups:
 - The target is the nearest thing in the way on either timeframe: a resistance zone, a bearish OB or a falling trendline. With nothing in the way it is `default_rr` x risk.
 - The trade is skipped if reward:risk is below `min_rr`.
 
-### Confirmation (`--confirm`)
+### Surgical entries (`--confirm refine`, the default in both modes)
 
-A setup is not entered straight away:
-- **`break`** (default): a buy-stop is placed at the signal candle's high (sell-stop at the low).
+The 5m setup says **where** to trade. The 1m chart says **when**, so the stop can be small:
+
+1. **Entry zone.** The setup marks a zone from the level that was tagged (zone, trendline, order
+   block) to the signal candle's close. The chart draws it in blue.
+2. **Change of character (CHoCH).** The bot waits for a 1m candle to close through the last 1m
+   swing against the trade: above the last lower high for a long, below the last higher low for a
+   short. It enters at that close.
+3. **Stop.** The stop goes just beyond the 1m swing that made the turn: the lowest low since that
+   lower high, minus 0.3 x the 1m ATR. It is never closer than 1 x the 1m ATR, to leave room for the
+   spread. The target stays the same, so the stop is a fraction of the 5m stop and reward:risk is
+   higher. The lot size is calculated from this tighter stop.
+4. **Cancelled** if price trades through the 5m stop level first, or if no CHoCH comes within
+   `--confirm-bars` 5m candles. It is skipped if the refined reward:risk is still below `--min-rr`.
+5. **In the trade,** stop and target are checked 1m candle by 1m candle, so the backtest knows which
+   came first.
+
+`--ltf` picks the lower timeframe (scalp `1m`, swing `15m`). The 1m candles come from the same source:
+- **Deriv:** as much 1m history as the 5m history.
+- **Yahoo:** only the last 7 days of 1m candles.
+- **`--csv`:** pass `--ltf-csv`.
+- **`--source sim`:** the 1m candles are simulated and the 5m candles are built from them.
+
+Where there are no 1m candles, the setup falls back to a `break` entry. The backtest prints how much
+of the history the 1m candles cover.
+
+```bash
+python -m tradebot backtest --mode scalp --symbol V75                      # surgical entries (default)
+python -m tradebot backtest --mode scalp --symbol V75 --confirm break      # the old entries, to compare
+python -m tradebot backtest --mode scalp --csv gbpusd-5m.csv --ltf-csv gbpusd-1m.csv
+```
+
+On simulated V75 the refined stops were about half the size of the `break` stops. Check it on
+your own symbols with the two commands above.
+
+### Other confirmations (`--confirm`)
+
+- **`break`**: a buy-stop is placed at the signal candle's high (sell-stop at the low).
   It fills only if price breaks that level within `--confirm-bars` candles. It is cancelled if
   price reaches the stop level first.
 - **`close`**: the bot waits for a candle to close beyond the signal candle's high/low, then
   enters at the next open.
 - **`none`**: enter at the next open.
 
-Reward:risk is measured from the confirmation level, not from the signal candle's close.
+With `break` and `close`, reward:risk is measured from the confirmation level, not from the signal
+candle's close.
 
 ## Money management (`tradebot/money.py`)
 

@@ -79,7 +79,9 @@ def build_outlook(df: pd.DataFrame, symbol: str, horizon: str, now: dt.datetime 
     out.watch = _watch_list(an, t, ahead, price, rng)
     if an.signal is not None:
         s = an.signal
-        how = f"on a break of {px(s.trigger)}" if s.trigger is not None else "at the next open"
+        how = (f"inside the zone {px(s.zone[0])}-{px(s.zone[1])} on a lower-timeframe change of character"
+               if s.zone is not None else f"on a break of {px(s.trigger)}" if s.trigger is not None
+               else "at the next open")
         out.watch.insert(0, f"Live setup now: **{s.side.upper()}** {how}, stop {px(s.stop)}, "
                             f"target {px(s.target)} (R:R {s.rr:.1f}) - {'; '.join(s.reasons)}")
     return out

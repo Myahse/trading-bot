@@ -8,7 +8,7 @@ from tradebot.strategy import Signal
 from tradebot.orderblocks import find_order_blocks
 from tradebot.fractal import HigherTimeframe
 from tradebot.money import MoneyManagement, lots, quote_rate
-from tradebot.strategy import Market, StrategyConfig, mode_config
+from tradebot.strategy import Market, StrategyConfig, mode_config, mode_money
 from tradebot.structure import Pivot, Trendline, TrendlineFinder, find_pivots, sr_zones
 
 
@@ -708,3 +708,93 @@ def test_chart_draws_setup_and_trades_as_position_boxes(tmp_path):
     path = tmp_path / "shot.png"
     technical_screenshot(market, "SYN", str(path), "1h", "6h", trades=res.trades)
     assert path.stat().st_size > 0
+
+
+# -- surgical entries (refine) ------------------------------------------------------
+
+from tradebot.refine import LowerTimeframe, choch, resample
+
+M1 = data.volatility_index(n=30_000, bar_seconds=60, seed=4)
+M5 = resample(M1, 300)
+REFINE = mode_config("scalp", confirmation="refine", ltf="1m")
+
+
+def test_resample_builds_higher_candles_from_lower_ones():
+    assert len(M5) == len(M1) // 5
+    first = M1.iloc[:5]
+    assert M5.open.iloc[0] == first.open.iloc[0] and M5.close.iloc[0] == first.close.iloc[-1]
+    assert M5.high.iloc[0] == first.high.max() and M5.low.iloc[0] == first.low.min()
+
+
+def test_choch_enters_on_the_close_through_the_last_lower_high():
+    # 1m: a drop into the zone with a lower high at 104 (index 4), a low of 98, then a close above 104
+    highs = [108, 105, 103, 102, 104, 102, 100, 99, 99.5, 101, 103, 105.5]
+    lows = [106, 103, 101, 100, 102, 100, 99, 98, 98.5, 99.5, 101, 102]
+    closes = [106.5, 104, 102, 101, 103, 101, 99.5, 98.5, 99.2, 100.5, 102.5, 105]
+    opens = closes
+    n = len(highs)
+    time = pd.date_range("2026-01-01", periods=n, freq="1min", tz="UTC")
+    ltf_df = pd.DataFrame({"time": time, "open": opens, "high": highs, "low": lows, "close": closes, "volume": 0.0})
+    ltf = LowerTimeframe(ltf_df, pd.Series(time[::4]), pivot=2, atr_period=3)
+    hits = [e for j in range(n) if (e := choch(ltf, "long", j, 0.0, 0.0)) is not None]
+    assert len(hits) == 1
+    e = hits[0]
+    assert e.index == n - 1 and e.price == 105 and e.swing == 104
+    assert e.stop == 98   # lowest low since the swing high
+    assert choch(ltf, "short", n - 1, 0.0, 0.0) is None
+
+
+def test_refined_entries_have_tighter_stops_and_enough_reward():
+    res = run_backtest(M5, REFINE, mode_money("scalp"), ltf=M1)
+    refined = [t for t in res.trades if t.fill_ltf is not None]
+    assert refined
+    market = Market(M5, REFINE, M1)
+    for t in refined:
+        assert abs(t.target - t.entry) / abs(t.entry - t.stop) >= REFINE.min_rr - 1e-9
+        assert abs(t.entry - t.stop) >= REFINE.refine_min_stop_atr * market.ltf.atr[t.fill_ltf] - 1e-9
+        assert market.ltf.bar_of[t.fill_ltf] == t.entry_bar
+        assert t.entry == market.ltf.c[t.fill_ltf]
+    plain = run_backtest(M5, mode_config("scalp", confirmation="break"), mode_money("scalp"))
+    assert np.mean([abs(t.entry - t.stop) for t in refined]) < np.mean([abs(t.entry - t.stop) for t in plain.trades])
+
+
+def test_refined_entries_never_look_ahead():
+    full = run_backtest(M5, REFINE, mode_money("scalp"), ltf=M1)
+    cut = 4000
+    part = run_backtest(M5.iloc[:cut], REFINE, mode_money("scalp"), ltf=M1)   # later 1m candles are dropped
+    done = [(t.side, t.entry_bar, t.entry, t.stop, t.exit_bar, t.exit) for t in full.trades if t.exit_bar < cut - 1]
+    assert done and done == [(t.side, t.entry_bar, t.entry, t.stop, t.exit_bar, t.exit)
+                             for t in part.trades if t.exit_bar < cut - 1]
+
+
+def test_refine_without_lower_timeframe_candles_falls_back_to_break_entries():
+    res = run_backtest(M5, REFINE, mode_money("scalp"))
+    assert res.trades and all(t.fill_ltf is None for t in res.trades)
+
+
+class TimeFeed:
+    """Serves each timeframe's candles that have closed by `now`."""
+
+    def __init__(self, frames, now):
+        self.frames, self.now = frames, now
+
+    def __call__(self, symbol, interval, count):
+        df, step = self.frames[interval], pd.Timedelta(seconds=data.DERIV_GRANULARITY[interval])
+        return df[df.time + step <= self.now].tail(count).reset_index(drop=True)
+
+
+def test_paper_trading_with_surgical_entries_matches_the_backtest(tmp_path, monkeypatch):
+    import tradebot.paper as paper_mod
+    monkeypatch.setattr(paper_mod.time, "sleep", lambda s: None)
+    start = 3000
+    feed = TimeFeed({"5m": M5, "1m": M1}, M5.time.iloc[start - 1] + pd.Timedelta(minutes=5))
+    trader = PaperTrader("V75", "5m", REFINE, mode_money("scalp"), 10_000.0, tmp_path, feed, history=start,
+                         screenshots=False, log=lambda m: None)
+    trader.bootstrap()
+    while feed.now < M5.time.iloc[-1] + pd.Timedelta(minutes=5):
+        feed.now += pd.Timedelta(minutes=5 * 23)
+        trader.poll()
+    expected = run_backtest(M5, REFINE, mode_money("scalp"), initial_equity=10_000.0, start=start, ltf=M1)
+    got = _closed(trader.engine.trades)
+    assert got and any(t.fill_ltf is not None for t in trader.engine.trades)
+    assert got == _closed(expected.trades)[:len(got)]

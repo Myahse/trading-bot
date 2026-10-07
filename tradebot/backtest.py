@@ -2,8 +2,10 @@
 
 Each bar, in this order:
   1. A pending order is filled, waits or is cancelled (see `StrategyConfig.confirmation`).
+     A "refine" order is filled on a lower-timeframe change of character (refine.py).
   2. An open position is checked against its stop (first: conservative), its partial
-     take-profit level and its target, using the bar's high and low.
+     take-profit level and its target, using the bar's high and low - or, when there are
+     lower-timeframe candles, each of them in turn, so the order of prices is known.
   3. At the bar's close the stop is moved: to break-even, then trailed. A moved stop only
      applies from the next bar, so the backtest never uses the order of prices inside a bar.
   4. If flat and allowed (cooldown, daily loss / trade limits), the bar is analysed for a new setup.
@@ -14,12 +16,13 @@ trip, and/or `fee_bps` per side as a fraction of price.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 import pandas as pd
 
 from .money import MoneyManagement, position
+from .refine import choch
 from .strategy import Market, Signal, StrategyConfig
 
 
@@ -44,6 +47,7 @@ class Trade:
     exit: float | None = None
     exit_reason: str = ""
     pnl: float = 0.0
+    fill_ltf: int | None = None     # lower-timeframe candle of a refined entry (exits are checked after it)
 
     def __post_init__(self):
         self.current_stop, self.open_size, self.best = self.stop, self.size, self.entry
@@ -74,7 +78,7 @@ class BacktestResult:
 
     def trades_frame(self) -> pd.DataFrame:
         cols = ["side", "setup", "entry_bar", "entry", "stop", "target", "size", "lots", "current_stop", "partial_bar",
-                "exit_bar", "exit", "exit_reason", "pnl"]
+                "exit_bar", "exit", "exit_reason", "pnl", "fill_ltf"]
         return pd.DataFrame([{**{k: getattr(t, k) for k in cols}, "r": round(t.r_multiple, 2),
                               "reasons": "; ".join(t.reasons)} for t in self.trades])
 
@@ -128,6 +132,39 @@ class Engine:
         df = self.market.df
         return pd.Timestamp(df["time"].iloc[t]).date() if "time" in df.columns else t
 
+    def _refine(self, order: Order, t: int):
+        """Walk the lower-timeframe candles of entry candle t looking for the change of character.
+        Returns (fill price | "cancel" | "skip" | None, signal with the refined stop, candle, note)."""
+        ltf, cfg, sig = self.market.ltf, self.market.cfg, order.signal
+        long = sig.side == "long"
+        for j in ltf.candles(t):
+            if (ltf.l[j] <= sig.stop) if long else (ltf.h[j] >= sig.stop):
+                return "cancel", sig, None, ""
+            e = choch(ltf, sig.side, j, cfg.refine_stop_buffer_atr, cfg.refine_min_stop_atr)
+            if e is None:
+                continue
+            note = f"lower-timeframe CHoCH: close {'above' if long else 'below'} swing {e.swing:.5g}, " \
+                   f"stop {e.stop:.5g} instead of {sig.stop:.5g}"
+            refined = replace(sig, entry=e.price, stop=e.stop)
+            if (e.price >= sig.target) if long else (e.price <= sig.target):
+                return "skip", sig, None, "price already at the target when the CHoCH came"
+            if refined.rr < cfg.min_rr:
+                return "skip", sig, None, f"refined reward:risk {refined.rr:.2f} below {cfg.min_rr:g}"
+            return e.price, refined, j, note
+        return None, sig, None, ""
+
+    def _path(self, t: int, pos: Trade) -> tuple[list[tuple[float, float, float]], bool]:
+        """The prices of candle t in order, as (open, high, low) steps, and whether a gap through the
+        stop at the first open counts. Lower-timeframe candles when available (after the fill on
+        the entry candle), otherwise the candle itself."""
+        m, ltf = self.market, self.market.ltf
+        if ltf is not None and ltf.covers(t) and (t > pos.entry_bar or pos.fill_ltf is not None):
+            js = ltf.candles(t, pos.fill_ltf if t == pos.entry_bar else None)
+            if len(js):
+                return [(ltf.o[j], ltf.h[j], ltf.l[j]) for j in js], True
+            return [(pos.entry, pos.entry, pos.entry)], False   # filled on the candle's last minute
+        return [(m.o[t], m.h[t], m.l[t])], t > pos.entry_bar
+
     def equity_at(self, t: int) -> float:
         p = self.pos
         return self.cash + (p.sign * (self.market.c[t] - p.entry) * p.open_size * p.rate if p is not None else 0.0)
@@ -142,49 +179,64 @@ class Engine:
         # 1. pending order
         if self.pos is None and self.order is not None:
             order = self.order
-            fill = _fill(order, t, o, h, l, c)
+            sig, note, fill_ltf = order.signal, "", None
+            if sig.confirmation == "refine" and m.ltf is not None and m.ltf.covers(t):
+                fill, sig, fill_ltf, note = self._refine(order, t)
+            else:   # no lower-timeframe candles here: the signal candle break stands in
+                fill = _fill(order, t, o, h, l, c)
             if fill == "cancel" or (fill is None and t >= order.expires and not order.confirmed):
                 self.order = None
-                self._event(t, "order cancelled", side=order.signal.side,
+                self._event(t, "order cancelled", side=sig.side,
                             reason="stop level traded first" if fill == "cancel" else "not confirmed in time")
+            elif fill == "skip":
+                self.order = None
+                self._event(t, "skipped", side=sig.side, reason=note)
             elif isinstance(fill, float):
-                pos, why = _open(order.signal, t, fill, self.cash, mm)
+                pos, why = _open(sig, t, fill, self.cash, mm)
                 self.order = None
                 if why:
                     self.skipped.append(why)
                 if pos is None:
-                    self._event(t, "skipped", side=order.signal.side, reason=why or "price already beyond stop/target")
+                    self._event(t, "skipped", side=sig.side, reason=why or "price already beyond stop/target")
                 else:
+                    pos.fill_ltf = fill_ltf
                     self.pos = pos
                     self.trades.append(pos)
                     self.trades_today += 1
                     self._event(t, "filled", side=pos.side, price=pos.entry, stop=pos.stop, target=pos.target,
-                                lots=pos.lots, units=pos.size, note=why)
+                                lots=pos.lots, units=pos.size, note="; ".join(x for x in (note, why) if x))
 
         # 2. stop / partial / target
+        path, hi, lo = [], h[t], l[t]
         if self.pos is not None:
             pos = self.pos
+            path, gap_ok = self._path(t, pos)
+            hi, lo = max(p[1] for p in path), min(p[2] for p in path)
             long = pos.side == "long"
             stop, risk = pos.current_stop, abs(pos.entry - pos.stop)
-            if t > pos.entry_bar and ((o[t] <= stop) if long else (o[t] >= stop)):
-                self.close_all(t, o[t], f"{pos.stop_kind} (gap)")
-            elif (l[t] <= stop) if long else (h[t] >= stop):
-                self.close_all(t, stop, pos.stop_kind)
-            else:
+            for po, ph, pl in path:
+                if gap_ok and ((po <= stop) if long else (po >= stop)):
+                    self.close_all(t, po, f"{pos.stop_kind} (gap)")
+                    break
+                gap_ok = True
+                if (pl <= stop) if long else (ph >= stop):
+                    self.close_all(t, stop, pos.stop_kind)
+                    break
                 if mm.partial_r is not None and mm.partial_pct > 0 and pos.partial_bar is None:
                     level = pos.entry + pos.sign * mm.partial_r * risk
                     qty = _partial_qty(pos, mm)
-                    if qty > 0 and ((h[t] >= level) if long else (l[t] <= level)):
+                    if qty > 0 and ((ph >= level) if long else (pl <= level)):
                         pnl = self._realise(pos, level, qty)
                         pos.partial_bar = t
                         self._event(t, "partial", side=pos.side, price=level, pnl=pnl, balance=self.cash)
-                if (h[t] >= pos.target) if long else (l[t] <= pos.target):
+                if (ph >= pos.target) if long else (pl <= pos.target):
                     self.close_all(t, pos.target, "target")
+                    break
 
         # 3. move the stop at the close
         if self.pos is not None:
             before = (self.pos.current_stop, self.pos.stop_kind)
-            _manage_stop(self.pos, t, h, l, c, atr, m, mm)
+            _manage_stop(self.pos, t, h, l, c, atr, m, mm, hi, lo)
             if (self.pos.current_stop, self.pos.stop_kind) != before:
                 self._event(t, "stop moved", side=self.pos.side, stop=self.pos.current_stop, stop_kind=self.pos.stop_kind)
 
@@ -200,15 +252,15 @@ class Engine:
                 self._event(t, "skipped", side=sig.side, reason=why)
             elif sig is not None:
                 self.order = Order(sig, t + (1 if sig.trigger is None else m.cfg.confirm_bars))
-                self._event(t, "order placed", side=sig.side, setup=sig.setup, trigger=sig.trigger,
+                self._event(t, "order placed", side=sig.side, setup=sig.setup, trigger=sig.trigger, zone=sig.zone,
                             entry=sig.entry, stop=sig.stop, target=sig.target, rr=sig.rr, reasons=sig.reasons)
 
 
 def run_backtest(df: pd.DataFrame, cfg: StrategyConfig | None = None, money: MoneyManagement | None = None,
                  initial_equity: float = 10_000.0, fee_bps: float = 0.0, spread: float = 0.0,
                  market: Market | None = None, risk_per_trade: float | None = None,
-                 max_leverage: float | None = None, start: int = 0) -> BacktestResult:
-    market = market or Market(df, cfg)
+                 max_leverage: float | None = None, start: int = 0, ltf: pd.DataFrame | None = None) -> BacktestResult:
+    market = market or Market(df, cfg, ltf)
     mm = money or MoneyManagement()
     if risk_per_trade is not None:
         mm.risk_per_trade = risk_per_trade
@@ -275,9 +327,11 @@ def _partial_qty(pos: Trade, mm: MoneyManagement) -> float:
     return float(part) * (pos.size / pos.lots)
 
 
-def _manage_stop(pos: Trade, t: int, h, l, c, atr, market: Market, mm: MoneyManagement) -> None:
+def _manage_stop(pos: Trade, t: int, h, l, c, atr, market: Market, mm: MoneyManagement,
+                 hi: float | None = None, lo: float | None = None) -> None:
+    """`hi`/`lo`: the range of candle t since the fill (default: the whole candle)."""
     long, risk = pos.side == "long", abs(pos.entry - pos.stop)
-    pos.best = max(pos.best, h[t]) if long else min(pos.best, l[t])
+    pos.best = max(pos.best, h[t] if hi is None else hi) if long else min(pos.best, l[t] if lo is None else lo)
     progress = pos.sign * (pos.best - pos.entry) / risk     # how many R price has gone in our favour
 
     def tighter(level: float) -> bool:

@@ -189,13 +189,23 @@ def analysis_steps(market: Market, an: Analysis, entry_tf: str, htf_tf: str,
 
     s = an.signal
     if s is not None:
-        trig = {"break": f"enter only if price breaks {px(s.trigger)} within {market.cfg.confirm_bars} candles",
-                "close": f"enter after a candle closes beyond {px(s.trigger)}",
-                "none": "enter at the next open"}[s.confirmation]
         steps.append((OK, f"Setup: {s.side.upper()} ({s.setup})", "; ".join(r for r in s.reasons) + "."))
-        steps.append((OK, "Confirmation", trig + f". Cancel if {px(s.stop)} trades first."))
-        steps.append((OK, f"Risk: stop {px(s.stop)}, target {px(s.target)}",
-                      f"reward:risk {s.rr:.1f} (minimum {market.cfg.min_rr:g})."))
+        if s.confirmation == "refine" and s.zone is not None:
+            ltf, way = market.cfg.ltf, "lower high" if s.side == "long" else "higher low"
+            steps.append((OK, f"Surgical entry: zone {px(s.zone[0])}-{px(s.zone[1])}",
+                          f"enter when a {ltf} candle closes through the last {ltf} {way} (change of character) "
+                          f"within {market.cfg.confirm_bars} candles; stop just beyond that {ltf} swing. "
+                          f"Cancel if {px(s.stop)} trades first."))
+            steps.append((OK, f"Risk: invalidation {px(s.stop)}, target {px(s.target)}",
+                          f"reward:risk at least {s.rr:.1f} from the close (minimum {market.cfg.min_rr:g}); "
+                          f"higher with the {ltf} stop."))
+        else:
+            trig = {"break": f"enter only if price breaks {px(s.trigger)} within {market.cfg.confirm_bars} candles",
+                    "close": f"enter after a candle closes beyond {px(s.trigger)}",
+                    "none": "enter at the next open"}[s.confirmation]
+            steps.append((OK, "Confirmation", trig + f". Cancel if {px(s.stop)} trades first."))
+            steps.append((OK, f"Risk: stop {px(s.stop)}, target {px(s.target)}",
+                          f"reward:risk {s.rr:.1f} (minimum {market.cfg.min_rr:g})."))
     else:
         steps.append((NO, "Setup: none",
                       f"needs {market.cfg.min_confluence}+ levels tagged with a rejection candle (or a trendline "
