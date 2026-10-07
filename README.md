@@ -97,6 +97,43 @@ Reward:risk is measured from the confirmation level, not from the signal candle'
 The backtest moves stops only at candle closes, so it never assumes the order of prices inside
 a candle. When one candle touches both the stop and the target, it assumes the stop came first.
 
+## Small accounts and real lot sizes
+
+For forex and gold, positions are sized in real lots. Each lot is 100,000 units for forex
+and 100 oz for gold; the minimum is 0.01 lots, in steps of 0.01. Profit and loss is converted to USD.
+- **Lot size:** the bot works out the lot size for `--risk`, then rounds it down to the lot step.
+- **Minimum lot:** if that comes out below the minimum, the bot uses the minimum lot, but only
+  while it risks no more than `--min-lot-max-risk` (default 5%) of the account. Above that the
+  setup is skipped and the signal says **NOT TRADEABLE**, with the real risk.
+- **Margin:** a position also needs margin. 0.01 lots of GBPUSD is about $1,300 of currency,
+  so a $20 account needs at least ~65x leverage. Set `--leverage` to your account's.
+- **Partial profit:** 0.01 lots can't be halved, so on tiny positions the partial take-profit is
+  skipped.
+- **Crosses:** for crosses such as GBPJPY, pass `--quote-rate` (USD per 1 JPY, e.g. 1/150).
+- **Volatility indices:** their minimum volume varies, so pass `--min-lot` from the MT5
+  specification. Without it they are sized in plain units.
+
+```bash
+python -m tradebot analyze  --mode scalp --symbol GBPUSD --equity 20 --leverage 500
+python -m tradebot backtest --mode scalp --symbol GBPUSD --equity 20 --leverage 500 --spread 0.00015
+python -m tradebot backtest --mode scalp --symbol V75 --equity 20 --min-lot 0.001   # check your spec
+```
+
+**What $20 did in a backtest.** These are 5-minute scalps over 60 days of Yahoo data, with the
+spreads assumed above and 1:500 leverage assumed:
+
+| Plan | XAUUSD | GBPUSD | USDJPY | GBPJPY |
+|---|---|---|---|---|
+| 2% risk, min lot up to 5%, stop the day at -10% | $20.00 (all 104 setups skipped) | $4.06 | $14.46 | $9.77 |
+| 10% risk, min lot up to 20%, no daily stop | $18.99 (8 trades) | $2.08 | $5.95 | $2.29 |
+
+- **Gold:** 0.01 lots on a $6-7 stop risks about a third of $20, so gold can't be scalped
+  sensibly on that account.
+- **Forex:** at the minimum lot each trade already risks 2-5%. The spread is a large share of a
+  5-pip stop (1.5 of 5 pips on GBPUSD), and that is what drains the account.
+- **Risking more** only loses faster.
+- **Aim:** with a small account, aim to prove the signals over weeks, not to grow it in a day.
+
 ## Screenshots: how the bot read the market
 
 Every analysis can be saved as two images, so you can see each step:

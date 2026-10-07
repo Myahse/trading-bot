@@ -479,3 +479,70 @@ def test_screenshots_render(tmp_path):
     fundamental_screenshot(fund.analyse("frxGBPJPY", "day", NOW, [], _fx(), None), str(tmp_path / "p.png"), "day")
     fundamental_screenshot(fund.analyse("R_75", "day", NOW, None, None, None), str(tmp_path / "s.png"), "day")
     assert all((tmp_path / n).stat().st_size > 10_000 for n in ("t.png", "g.png", "p.png", "s.png"))
+
+
+# -- small accounts and real lot sizes -------------------------------------------------
+
+from tradebot.money import position
+
+
+def test_minimum_lot_too_risky_is_skipped():
+    # $20, gold, $6.70 stop: 0.01 lot (1 oz) loses $6.70 = 33.5% of the account
+    mm = MoneyManagement.for_symbol("frxXAUUSD", risk_per_trade=0.02)
+    pos = position(mm, 20.0, 2400.0, 2393.3)
+    assert pos.units == 0 and "33.5%" in pos.note
+
+
+def test_minimum_lot_used_when_within_the_limit():
+    # $20, GBPUSD, 5-pip stop: 0.01 lot loses $0.50 = 2.5%; wanted 1% -> forced up to the minimum lot
+    mm = MoneyManagement.for_symbol("frxGBPUSD", risk_per_trade=0.01, max_leverage=500)
+    pos = position(mm, 20.0, 1.3000, 1.2995)
+    assert pos.lots == 0.01 and pos.risk == pytest.approx(0.025) and pos.note.startswith("minimum lot")
+
+
+def test_twenty_dollars_at_30x_cannot_margin_the_minimum_forex_lot():
+    # 0.01 lot GBPUSD = 1,000 GBP ~ $1,300 of exposure; $20 x 30 = $600
+    pos = position(MoneyManagement.for_symbol("frxGBPUSD", max_leverage=30), 20.0, 1.3000, 1.2995)
+    assert pos.units == 0 and "margin" in pos.note
+
+
+def test_lots_round_down_and_respect_leverage():
+    mm = MoneyManagement.for_symbol("frxGBPUSD", risk_per_trade=0.01, max_leverage=30)
+    pos = position(mm, 10_000.0, 1.3000, 1.2990)        # $100 risk / ($10 per lot per 10 pips) = 1.0 lot
+    assert pos.lots == pytest.approx(1.0)
+    pos = position(mm, 10_000.0, 1.3000, 1.29999)       # tiny stop -> capped by 30x leverage = 2.3 lots
+    assert pos.lots == pytest.approx(2.3) and "leverage" in pos.note
+
+
+def test_usdjpy_pnl_is_in_dollars():
+    mm = MoneyManagement.for_symbol("frxUSDJPY", risk_per_trade=0.01)
+    pos = position(mm, 10_000.0, 150.0, 149.5)          # 50 pips; 1 lot = 100,000 USD -> $333 per lot
+    assert pos.risk * 10_000 == pytest.approx(pos.lots * 100_000 * 0.5 / 150.0)
+    assert pos.risk == pytest.approx(0.01, abs=0.001)
+
+
+def test_cross_needs_a_quote_rate():
+    with pytest.raises(ValueError, match="quote-rate"):
+        position(MoneyManagement.for_symbol("frxGBPJPY"), 1000.0, 190.0, 189.5)
+    mm = MoneyManagement.for_symbol("frxGBPJPY", quote_rate=1 / 150)
+    assert position(mm, 1000.0, 190.0, 189.5).lots == pytest.approx(0.03)
+
+
+def test_small_account_backtest_uses_whole_lots_and_skips_partials_it_cannot_split():
+    df = data.volatility_index(n=4000, vol=0.08, bar_seconds=300, seed=5, start=1.30)   # GBPUSD-like prices
+    mm = MoneyManagement.for_symbol("frxGBPUSD", risk_per_trade=0.02, partial_r=1.0, partial_pct=0.5,
+                                    max_daily_loss=None, min_lot_max_risk=1.0, max_leverage=500)
+    res = run_backtest(df, StrategyConfig(min_confluence=1), mm, initial_equity=20.0)
+    assert res.trades
+    for tr in res.trades:
+        assert tr.lots is not None and round(tr.lots / 0.01, 6) == round(tr.lots / 0.01)
+        if tr.lots < 0.02:
+            assert tr.partial_bar is None      # 0.01 lot can't be halved
+    assert res.stats["final_equity"] == pytest.approx(20.0 + sum(t.pnl for t in res.trades))
+
+
+def test_gold_on_twenty_dollars_skips_every_setup():
+    df = data.volatility_index(n=3000, vol=0.15, bar_seconds=300, seed=5, start=2400.0)
+    mm = MoneyManagement.for_symbol("frxXAUUSD", risk_per_trade=0.05, max_daily_loss=None)
+    res = run_backtest(df, StrategyConfig(min_confluence=1), mm, initial_equity=20.0)
+    assert res.stats["trades"] == 0 and res.stats["skipped_min_lot"] > 0

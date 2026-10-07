@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-from .money import MoneyManagement
+from .money import MoneyManagement, position
 from .strategy import Market, Signal, StrategyConfig
 
 
@@ -33,6 +33,8 @@ class Trade:
     target: float
     size: float
     reasons: list[str]
+    rate: float = 1.0               # USD per unit of quote currency (P&L is in USD)
+    lots: float | None = None
     current_stop: float = float("nan")
     open_size: float = 0.0
     best: float = float("nan")      # most favourable price reached so far
@@ -52,7 +54,7 @@ class Trade:
 
     @property
     def r_multiple(self) -> float:
-        risk = abs(self.entry - self.stop) * self.size
+        risk = abs(self.entry - self.stop) * self.size * self.rate
         return self.pnl / risk if risk else 0.0
 
 
@@ -71,7 +73,7 @@ class BacktestResult:
     stats: dict = field(default_factory=dict)
 
     def trades_frame(self) -> pd.DataFrame:
-        cols = ["side", "setup", "entry_bar", "entry", "stop", "target", "size", "current_stop", "partial_bar",
+        cols = ["side", "setup", "entry_bar", "entry", "stop", "target", "size", "lots", "current_stop", "partial_bar",
                 "exit_bar", "exit", "exit_reason", "pnl"]
         return pd.DataFrame([{**{k: getattr(t, k) for k in cols}, "r": round(t.r_multiple, 2),
                               "reasons": "; ".join(t.reasons)} for t in self.trades])
@@ -99,11 +101,12 @@ def run_backtest(df: pd.DataFrame, cfg: StrategyConfig | None = None, money: Mon
     order: Order | None = None
     cooldown_until = -1
     day, day_start_cash, trades_today = None, cash, 0
+    skipped: list[str] = []
 
     def realise(trade: Trade, bar: int, price: float, qty: float) -> None:
         nonlocal cash
-        cost = fee * (trade.entry + price) + spread   # per unit, per round trip
-        pnl = (trade.sign * (price - trade.entry) - cost) * qty
+        cost = fee * (trade.entry + price) + spread   # per unit, per round trip, in quote currency
+        pnl = (trade.sign * (price - trade.entry) - cost) * qty * trade.rate
         trade.pnl += pnl
         trade.open_size -= qty
         cash += pnl
@@ -122,8 +125,10 @@ def run_backtest(df: pd.DataFrame, cfg: StrategyConfig | None = None, money: Mon
             if fill == "cancel" or (fill is None and t >= order.expires and not order.confirmed):
                 order = None
             elif isinstance(fill, float):
-                pos = _open(order.signal, t, fill, cash, mm)
+                pos, why = _open(order.signal, t, fill, cash, mm)
                 order = None
+                if why:
+                    skipped.append(why)
                 if pos is not None:
                     trades.append(pos)
                     trades_today += 1
@@ -139,8 +144,9 @@ def run_backtest(df: pd.DataFrame, cfg: StrategyConfig | None = None, money: Mon
             else:
                 if mm.partial_r is not None and mm.partial_pct > 0 and pos.partial_bar is None:
                     level = pos.entry + pos.sign * mm.partial_r * risk
-                    if (h[t] >= level) if long else (l[t] <= level):
-                        realise(pos, t, level, pos.size * mm.partial_pct)
+                    qty = _partial_qty(pos, mm)
+                    if qty > 0 and ((h[t] >= level) if long else (l[t] <= level)):
+                        realise(pos, t, level, qty)
                         pos.partial_bar = t
                 if (h[t] >= pos.target) if long else (l[t] <= pos.target):
                     close_all(pos, t, pos.target, "target")
@@ -161,7 +167,7 @@ def run_backtest(df: pd.DataFrame, cfg: StrategyConfig | None = None, money: Mon
             if sig is not None:
                 order = Order(sig, t + (1 if sig.trigger is None else market.cfg.confirm_bars))
 
-        equity[t] = cash + (pos.sign * (c[t] - pos.entry) * pos.open_size if pos is not None else 0.0)
+        equity[t] = cash + (pos.sign * (c[t] - pos.entry) * pos.open_size * pos.rate if pos is not None else 0.0)
 
     if pos is not None:
         close_all(pos, n - 1, c[-1], "end of data")
@@ -170,6 +176,8 @@ def run_backtest(df: pd.DataFrame, cfg: StrategyConfig | None = None, money: Mon
     index = market.df["time"] if "time" in market.df.columns else market.df.index
     result = BacktestResult(trades, pd.Series(equity, index=index), initial_equity)
     result.stats = _stats(result)
+    result.stats["skipped_min_lot"] = sum(w.startswith("skipped") for w in skipped)
+    result.stats["at_min_lot"] = sum(w.startswith("minimum lot") for w in skipped)
     return result
 
 
@@ -194,12 +202,26 @@ def _fill(order: Order, t: int, o, h, l, c) -> float | str | None:
     return None
 
 
-def _open(sig: Signal, t: int, price: float, equity: float, mm: MoneyManagement) -> Trade | None:
+def _open(sig: Signal, t: int, price: float, equity: float, mm: MoneyManagement) -> tuple[Trade | None, str]:
     long = sig.side == "long"
     if (price <= sig.stop or price >= sig.target) if long else (price >= sig.stop or price <= sig.target):
-        return None
-    size = min(equity * mm.risk_per_trade / abs(price - sig.stop), equity * mm.max_leverage / price)
-    return Trade(sig.side, sig.setup, t, float(price), sig.stop, sig.target, size, sig.reasons)
+        return None, ""
+    pos = position(mm, equity, price, sig.stop)
+    if pos.units <= 0:
+        return None, pos.note
+    return Trade(sig.side, sig.setup, t, float(price), sig.stop, sig.target, pos.units, sig.reasons,
+                 rate=pos.rate, lots=pos.lots), pos.note
+
+
+def _partial_qty(pos: Trade, mm: MoneyManagement) -> float:
+    """Units to close at the partial target; 0 when lots can't be split (e.g. 0.01 lot can't be halved)."""
+    if pos.lots is None:
+        return pos.size * mm.partial_pct
+    step = mm.lot_step
+    part = np.floor(pos.lots * mm.partial_pct / step + 1e-9) * step
+    if part < mm.min_lot - 1e-12 or pos.lots - part < mm.min_lot - 1e-12:
+        return 0.0
+    return float(part) * (pos.size / pos.lots)
 
 
 def _manage_stop(pos: Trade, t: int, h, l, c, atr, market: Market, mm: MoneyManagement) -> None:

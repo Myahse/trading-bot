@@ -18,7 +18,7 @@ from pathlib import Path
 
 from . import data
 from .backtest import run_backtest
-from .money import MoneyManagement, contract_size, lots, quote_rate
+from .money import MoneyManagement, position
 from . import fundamentals as fund
 from .outlook import HORIZONS, build_outlook, to_markdown
 from .strategy import MODES, Market, StrategyConfig
@@ -77,6 +77,10 @@ def _parser() -> argparse.ArgumentParser:
     g.add_argument("--quote-rate", type=float, help="USD value of 1 unit of the quote currency, for crosses "
                    "such as GBPJPY (e.g. 0.0067 when USDJPY is 150)")
     g.add_argument("--lot-step", type=float, default=0.01)
+    g.add_argument("--min-lot", type=float, help="smallest volume your broker accepts (forex/gold 0.01; "
+                   "synthetic indices vary - check the MT5 specification)")
+    g.add_argument("--min-lot-max-risk", type=float, default=0.05,
+                   help="skip a trade if even the minimum lot would risk more than this fraction (default 0.05)")
 
     g = p.add_argument_group("output")
     g.add_argument("--plot", help="save a chart to this .png")
@@ -112,14 +116,21 @@ def _money(args) -> MoneyManagement:
     base = dict(MODES[args.mode]["money"]) if args.mode else {}
     given = {"risk_per_trade": args.risk, "max_leverage": args.leverage, "partial_pct": args.partial_pct,
              "trail": args.trail, "trail_start_r": args.trail_start, "trail_atr": args.trail_atr,
-             "max_trades_per_day": args.max_trades_day}
+             "max_trades_per_day": args.max_trades_day, "contract_size": args.contract_size,
+             "quote_rate": args.quote_rate, "lot_step": args.lot_step, "min_lot": args.min_lot,
+             "min_lot_max_risk": args.min_lot_max_risk}
     base.update({k: v for k, v in given.items() if v is not None})
     argv = " ".join(_argv)
     for flag, key, value in (("--breakeven", "breakeven_r", args.breakeven), ("--partial", "partial_r", args.partial),
                              ("--daily-loss", "max_daily_loss", args.daily_loss)):
         if re.search(rf"{flag}(\s|=|$)", argv):   # given explicitly, possibly as "off"
             base[key] = value
-    return MoneyManagement(**base)
+    if args.csv:   # unknown instrument: size in plain units unless told otherwise
+        return MoneyManagement(**base)
+    mm = MoneyManagement.for_symbol(data.deriv_symbol(args.symbol), **base)
+    if args.min_lot is not None and mm.contract_size is None:
+        mm.contract_size = 1.0   # synthetic indices: 1 unit per lot
+    return mm
 
 
 def _load(args, symbol: str | None = None, interval: str | None = None, count: int | None = None):
@@ -237,15 +248,20 @@ def _report(market: Market, args, money: MoneyManagement, f=None) -> None:
     print(f"  stop {px(s.stop)}   target {px(s.target)}   R:R {s.rr:.2f}")
     print("  because: " + "; ".join(s.reasons))
 
-    sym = data.deriv_symbol(args.symbol)
-    size = args.contract_size or contract_size(sym)
-    rate = args.quote_rate or quote_rate(sym, s.entry)
-    if rate is None:
-        print(f"  size: pass --quote-rate (USD per 1 {sym[-3:]}) to get the lot size for this cross")
+    try:
+        pos = position(money, args.equity, s.entry, s.stop)
+    except ValueError as exc:   # a cross without --quote-rate
+        print(f"  size: {exc}")
     else:
-        n = lots(args.equity, money.risk_per_trade, s.entry, s.stop, size, rate, args.lot_step)
-        print(f"  size: {n:g} lots = {money.risk_per_trade:.1%} of {args.equity:,.0f} USD at risk "
-              f"(contract size {size:g}; check your MT5 symbol spec)")
+        if pos.units <= 0:
+            print(f"  size: {pos.note} - NOT TRADEABLE on a {args.equity:,.0f} USD account")
+        elif pos.lots is not None:
+            print(f"  size: {pos.lots:g} lots, {pos.risk:.1%} of {args.equity:,.0f} USD at risk "
+                  f"(${pos.risk * args.equity:,.2f})" + (f" - {pos.note}" if pos.note else ""))
+        else:
+            print(f"  size: {pos.units:,.4g} units, {pos.risk:.1%} of {args.equity:,.0f} USD at risk"
+                  + ("" if data.deriv_symbol(args.symbol).startswith("frx") else
+                     " (pass --min-lot from your MT5 spec to size in lots)"))
     plan = []
     if money.partial_r is not None and money.partial_pct > 0:
         plan.append(f"close {money.partial_pct:.0%} at +{money.partial_r:g}R")
@@ -271,6 +287,9 @@ def _backtest(market: Market, args, money: MoneyManagement):
           f"final equity {st['final_equity']:,.2f}")
     if st["exits"]:
         print("exits: " + ", ".join(f"{k} {v}" for k, v in st["exits"].items()))
+    if st["skipped_min_lot"] or st["at_min_lot"]:
+        print(f"lot size: {st['skipped_min_lot']} setups skipped (minimum lot too risky), "
+              f"{st['at_min_lot']} trades forced up to the minimum lot")
     if result.trades:
         frame = result.trades_frame()
         for setup, g in frame.groupby("setup"):
