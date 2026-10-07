@@ -7,7 +7,7 @@ from tradebot.backtest import run_backtest
 from tradebot.orderblocks import find_order_blocks
 from tradebot.fractal import HigherTimeframe
 from tradebot.strategy import Market, StrategyConfig, mode_config
-from tradebot.structure import Pivot, Trendline, find_pivots, sr_zones, trendlines
+from tradebot.structure import Pivot, Trendline, TrendlineFinder, find_pivots, sr_zones
 
 
 def candles(rows):
@@ -48,22 +48,48 @@ def test_bullish_order_block_is_last_down_candle_before_break():
     assert ob.invalidated_at is None
 
 
-def test_trendline_break_is_recorded():
-    pivots = [Pivot(0, 10.0, "high", 2), Pivot(10, 8.0, "high", 12)]   # falling: -0.2 per bar
-    closes = np.full(30, 5.0)
-    closes[20] = 7.5                                                    # line is at 6.0 on bar 20
-    (line,) = trendlines(pivots, closes, 25, tolerance=0.1)
-    assert line.kind == "resistance" and line.broken_at == 20
-    assert trendlines(pivots, closes, 19, tolerance=0.1)[0].broken_at is None
+def _finder(lows):
+    lows = np.asarray(lows, float)
+    return TrendlineFinder(lows + 1, lows, lows + 0.5, np.ones(len(lows)))
+
+
+def _lows():
+    lows = np.full(40, 20.0)
+    lows[[0, 10, 20, 30]] = [10, 12, 14, 15]     # 0, 10, 20 are on one line (+0.2/bar); 30 undercuts it
+    return lows
+
+
+SWINGS = [Pivot(i, p, "low", i + 3) for i, p in [(0, 10.0), (10, 12.0), (20, 14.0), (30, 15.0)]]
+
+
+def test_trendline_prefers_the_line_with_most_touches():
+    (line,) = _finder(_lows()).lines_at(25, SWINGS[:3], retest_window=10)
+    assert (line.kind, line.i1, line.touches, line.broken_at) == ("support", 0, (0, 10, 20), None)
+
+
+def test_trendline_break_is_revealed_only_when_it_happens_and_a_new_line_takes_over():
+    lines = _finder(_lows()).lines_at(35, SWINGS, retest_window=10)
+    intact = [ln for ln in lines if ln.broken_at is None]
+    broken = [ln for ln in lines if ln.broken_at is not None]
+    assert broken[0].touches == (0, 10, 20) and broken[0].broken_at == 30
+    assert (intact[0].i1, intact[0].i2) == (0, 30)    # redrawn under the new low
+    assert _finder(_lows()).lines_at(29, SWINGS[:3], retest_window=10)[0].broken_at is None
+
+
+def test_trendline_never_cuts_through_a_candle():
+    lows = _lows()
+    lows[5] = 9.0                                    # a wick below the 0 -> 10 line
+    (line,) = _finder(lows).lines_at(25, SWINGS[:3], retest_window=10)
+    assert (line.i1, line.i2) == (10, 20)
 
 
 def test_breakout_signal_on_trendline_break():
-    # Falling highs at bars 5 and 15, then a strong green candle closes through the line.
+    # Falling highs at bars 5 and 18, then a strong green candle closes through the line.
     rows = [(10, 10.5, 9.5, 10)] * 40
-    rows[5], rows[15] = (10, 14, 9.5, 10), (10, 12, 9.5, 10)          # line: 14 -> 12, slope -0.2
-    rows[20] = (10, 11.6, 9.9, 11.5)                                    # line at 11.0 on bar 20
+    rows[5], rows[18] = (10, 14, 9.5, 10), (10, 12, 9.5, 10)          # line: 14 -> 12 over 13 bars
+    rows[22] = (10, 11.8, 9.9, 11.7)                                    # line at ~11.38 on bar 22
     cfg = StrategyConfig(pivot_left=3, pivot_right=3, atr_period=3, trend_filter=False, min_rr=0.5)
-    sig = Market(candles(rows), cfg).analyze(20).signal
+    sig = Market(candles(rows), cfg).analyze(22).signal
     assert sig is not None and (sig.side, sig.setup) == ("long", "breakout")
     assert sig.stop < 9.9
 
@@ -126,3 +152,68 @@ def test_cooldown_spaces_out_trades_after_a_loss():
     for prev, nxt in zip(res.trades, res.trades[1:]):
         if prev.pnl < 0:
             assert nxt.entry_bar - prev.exit_bar > 10
+
+
+class FakeDeriv:
+    """Stands in for Deriv's WebSocket: serves 12 five-minute candles, newest last."""
+
+    def __init__(self):
+        self.requests = []
+        self.epochs = [1_700_000_000 + 300 * i for i in range(12)]
+
+    def send(self, message):
+        import json
+        self.requests.append(json.loads(message))
+
+    def recv(self):
+        import json
+        req = self.requests[-1]
+        end = self.epochs[-1] if req["end"] == "latest" else req["end"]
+        rows = [e for e in self.epochs if e <= end][-req["count"]:]
+        return json.dumps({"candles": [{"epoch": e, "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5}
+                                       for e in rows]})
+
+    def close(self):
+        pass
+
+
+def test_deriv_loader_pages_back_and_drops_the_forming_candle():
+    fake = FakeDeriv()
+    now = fake.epochs[-1] + 120          # the last candle started 2 minutes ago: still forming
+    df = data.load_deriv("V75", "5m", count=10, connect=lambda url: fake, now=now)
+    assert fake.requests[0]["ticks_history"] == "R_75" and fake.requests[0]["granularity"] == 300
+    assert len(fake.requests) == 1 and len(df) == 9
+    assert df.time.is_monotonic_increasing and df.time.iloc[-1].timestamp() == fake.epochs[-2]
+
+
+def test_deriv_loader_requests_older_pages_until_count(monkeypatch):
+    fake = FakeDeriv()
+    fake.epochs = [1_700_000_000 + 300 * i for i in range(7000)]
+    df = data.load_deriv("XAUUSD", "5m", count=6000, connect=lambda url: fake, now=2e9)
+    assert [r["count"] for r in fake.requests] == [5000, 1000]
+    assert fake.requests[1]["end"] == fake.epochs[2000] - 1
+    assert fake.requests[0]["ticks_history"] == "frxXAUUSD"
+    assert len(df) == 6000 and df.time.is_unique
+
+
+@pytest.mark.parametrize("name, symbol", [("V75", "R_75"), ("v100(1s)", "1HZ100V"), ("Volatility 25 Index", "R_25"),
+                                          ("XAUUSD", "frxXAUUSD"), ("gbpjpy", "frxGBPJPY"), ("R_50", "R_50")])
+def test_deriv_symbol_names(name, symbol):
+    assert data.deriv_symbol(name) == symbol
+
+
+def test_spread_is_charged_once_per_round_trip():
+    df = data.volatility_index(n=3000, seed=4)
+    free = run_backtest(df, StrategyConfig(min_confluence=1))
+    costly = run_backtest(df, StrategyConfig(min_confluence=1), spread=50.0)
+    assert free.trades and len(free.trades) == len(costly.trades)
+    t0, t1 = free.trades[0], costly.trades[0]
+    assert t1.pnl == pytest.approx(t0.pnl - 50.0 * t0.size)
+
+
+def test_swings_after_a_break_do_not_count_as_touches():
+    lows = _lows()
+    lows[35] = 17.0                                   # sits exactly on the old line, but after it broke at 30
+    swings = SWINGS + [Pivot(35, 17.0, "low", 38)]
+    broken = [ln for ln in _finder(lows).lines_at(39, swings, retest_window=10) if ln.broken_at is not None]
+    assert broken[0].touches == (0, 10, 20)

@@ -11,6 +11,7 @@ import numpy as np
 
 from .backtest import BacktestResult
 from .strategy import Market
+from .structure import px
 
 UP, DOWN, LINE, HTF = "#2a9d8f", "#e76f51", "#264653", "#6d597a"
 
@@ -41,29 +42,43 @@ def plot(market: Market, path: str, result: BacktestResult | None = None, last: 
         if lo - pad <= y <= hi + pad:
             labels.append((y, text, colour))
 
+    right = n + max(6, (n - start) // 14)    # lines and boxes are projected up to here; labels go after it
     for zones, colour in ((an.support[:2], UP), (an.resistance[:2], DOWN)):
         for z in zones:
-            ax.axhspan(z.low, z.high, color=colour, alpha=0.15, zorder=1)
-            label(z.mid, f"{z.mid:.5g}", colour)
+            ax.add_patch(Rectangle((start - 1, z.low), right - start + 1, z.high - z.low, facecolor=colour,
+                                   alpha=0.13, linewidth=0, zorder=1))
+            label(z.mid, f"{px(z.mid)}", colour)
     for z in an.htf_support[:1] + an.htf_resistance[:1]:
-        ax.axhspan(z.low, z.high, facecolor="none", edgecolor=HTF, linewidth=1.5, zorder=1)
-        label(z.mid, f"HTF {z.mid:.5g}", HTF)
+        ax.add_patch(Rectangle((start - 1, z.low), right - start + 1, z.high - z.low, facecolor="none",
+                               edgecolor=HTF, linewidth=1.5, zorder=1))
+        label(z.mid, f"HTF {px(z.mid)}", HTF)
 
     for line in an.trendlines:
-        end = n - 1 if line.broken_at is None else line.broken_at
+        colour, width = (HTF, 2.2) if line.htf else (LINE, 1.4)
+        end = right if line.broken_at is None else line.broken_at
         xs = np.array([max(line.i1, start), end])
-        ax.plot(xs, [line.value_at(i) for i in xs], color=LINE, linewidth=1.2, zorder=4)
-        if line.broken_at is not None:  # projection after the break, where a retest would happen
-            xs = np.array([line.broken_at, n - 1])
-            ax.plot(xs, [line.value_at(i) for i in xs], color=LINE, linewidth=1, linestyle=":", zorder=4)
-            ax.scatter(line.broken_at, line.value_at(line.broken_at), color=LINE, s=30, zorder=5)
+        ax.plot(xs, [line.value_at(i) for i in xs], color=colour, linewidth=width, zorder=4,
+                solid_capstyle="round")
+        touches = [i for i in line.touches if i >= start]
+        ax.scatter(touches, [line.value_at(i) for i in touches], s=46, facecolors="white",
+                   edgecolors=colour, linewidths=1.4, zorder=5)
+        if line.broken_at is not None:  # where it broke, then the projection where a retest would happen
+            window = market.cfg.retest_window * (market.htf.bars_per_candle if line.htf else 1)
+            window = min(window, (n - start) / 4)   # keep long higher-timeframe projections short on screen
+            xs = np.array([line.broken_at, min(right, int(line.broken_at + window))])
+            ax.plot(xs, [line.value_at(i) for i in xs], color=colour, linewidth=width * 0.7,
+                    linestyle=(0, (2, 3)), zorder=4)
+            ax.scatter(line.broken_at, line.value_at(line.broken_at), marker="D", s=36, color=colour, zorder=5)
+        tf = "HTF " if line.htf else ""
+        state = "" if line.broken_at is None else " broken"
+        label(line.value_at(xs[-1]), f"{tf}TL x{len(line.touches)}{state}", colour)
 
     for kind, colour in (("bullish", UP), ("bearish", DOWN)):
         nearest = sorted((b for b in an.order_blocks if b.kind == kind),
                          key=lambda b: abs((b.low + b.high) / 2 - an.price))[:1]
         for ob in nearest:
             left = max(ob.index, start)
-            ax.add_patch(Rectangle((left, ob.low), n - 1 - left, ob.high - ob.low, facecolor=colour,
+            ax.add_patch(Rectangle((left, ob.low), right - left, ob.high - ob.low, facecolor=colour,
                                    edgecolor=colour, alpha=0.25, hatch="//", zorder=1))
             label((ob.low + ob.high) / 2, "OB", colour)
 
@@ -82,12 +97,12 @@ def plot(market: Market, path: str, result: BacktestResult | None = None, last: 
     for y, text, colour in sorted(labels):
         y_text = max(y, placed[-1] + gap) if placed else y
         placed.append(y_text)
-        ax.text(n + 1, y_text, text, va="center", fontsize=8, color=colour)
+        ax.text(right + 2, y_text, text, va="center", fontsize=8, color=colour)
     ax.set_ylim(lo - pad, hi + pad)   # levels far from the visible price are not worth zooming out for
-    ax.set_xlim(start - 1, n + max(10, (n - start) // 10))
+    ax.set_xlim(start - 1, right + max(14, (n - start) // 7))
     trend = f"entry bias {an.bias}" + (f", HTF bias {an.htf_bias}" if an.htf_bias else "")
-    ax.set_title(f"{trend} - shaded: zones, outlined: HTF zones, line: trendline (dotted after break), hatched: OB",
-                 fontsize=10)
+    ax.set_title(f"{trend}   |   shaded: zones   outlined: HTF zones   TL: trendline (o = touch, "
+                 f"dotted after break)   hatched: order block", fontsize=10)
     ax.grid(alpha=0.15)
     fig.tight_layout()
     fig.savefig(path, dpi=120)

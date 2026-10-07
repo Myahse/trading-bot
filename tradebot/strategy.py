@@ -27,7 +27,7 @@ import pandas as pd
 
 from .fractal import HigherTimeframe
 from .orderblocks import OrderBlock, find_order_blocks
-from .structure import Pivot, Trendline, Zone, atr, find_pivots, market_bias, sr_zones, trendlines
+from .structure import Pivot, Trendline, TrendlineFinder, Zone, atr, px, find_pivots, market_bias, sr_zones
 
 
 @dataclass
@@ -56,13 +56,13 @@ class StrategyConfig:
 
 
 MODES: dict[str, dict] = {
-    # Fast entries on 1m-15m candles, direction from the hourly structure.
-    "scalp": dict(interval="5m", period="60d", risk=0.005, config=dict(
+    # 5m entries (1m-15m all work), direction and big levels from the hourly chart.
+    "scalp": dict(interval="5m", count=20_000, period="60d", risk=0.005, config=dict(
         htf="1h", pivot_left=3, pivot_right=3, htf_pivot=3, zone_lookback_pivots=30, ob_max_age=100,
         min_rr=1.5, default_rr=1.5, retest_window=12, cooldown_bars=6, min_stop_atr=1.0)),
-    # Daily candles, direction from the weekly structure.
-    "swing": dict(interval="1d", period="5y", risk=0.01, config=dict(
-        htf="W", pivot_left=5, pivot_right=5, htf_pivot=2, zone_lookback_pivots=40, ob_max_age=150,
+    # 4h entries, direction and big levels from the daily chart.
+    "swing": dict(interval="4h", count=5_000, period="730d", risk=0.01, config=dict(
+        htf="D", pivot_left=5, pivot_right=5, htf_pivot=3, zone_lookback_pivots=40, ob_max_age=150,
         min_rr=2.0, default_rr=2.5, retest_window=15, cooldown_bars=3)),
 }
 
@@ -120,6 +120,11 @@ class Market:
         self.order_blocks = find_order_blocks(self.df, self.pivots, self.atr, self.cfg.ob_displacement_atr)
         self.htf = HigherTimeframe(self.df, self.cfg.htf, self.cfg.htf_pivot, self.cfg.atr_period) \
             if self.cfg.htf else None
+        span = 2 * (self.cfg.pivot_left + self.cfg.pivot_right)
+        self.lines = TrendlineFinder(self.h, self.l, self.c, self.atr, min_span=span)
+        self.htf_lines = TrendlineFinder(
+            self.h, self.l, self.c, self.htf.atr_by_bar(len(self.c)), htf=True,
+            min_span=int(4 * self.cfg.htf_pivot * self.htf.bars_per_candle)) if self.htf else None
 
     def pivots_known_at(self, t: int) -> list[Pivot]:
         return self.pivots[: int(np.searchsorted(self._confirmed, t, side="right"))]
@@ -130,14 +135,14 @@ class Market:
         pivots = self.pivots_known_at(t)
         zones = sr_zones(pivots[-cfg.zone_lookback_pivots:], cfg.zone_tolerance_atr * a, cfg.zone_min_touches) \
             if ready else []
-        lines = [line for line in trendlines(pivots, self.c, t, 0.1 * a)
-                 if line.broken_at is None or t - line.broken_at <= cfg.retest_window] if ready else []
+        lines = self.lines.lines_at(t, pivots, cfg.retest_window) if ready else []
         obs = [ob for ob in self.order_blocks if ob.active_at(t) and t - ob.created_at <= cfg.ob_max_age]
 
         htf_bias, htf_zones = None, []
         if self.htf is not None:
             hp = self.htf.pivots_known_at(t)
             htf_bias = market_bias(hp)
+            lines += self.htf_lines.lines_at(t, hp, int(cfg.retest_window * self.htf.bars_per_candle))
             ha = self.htf.atr_known_at(t)
             if not np.isnan(ha):
                 htf_zones = sr_zones(hp[-cfg.zone_lookback_pivots:], cfg.zone_tolerance_atr * ha, 2)
@@ -168,21 +173,21 @@ class Market:
 
         zone = next((z for z in an.support if lo <= z.high + buf and c > z.low), None)
         if zone:
-            tags.append((f"support zone {zone.low:.5g}-{zone.high:.5g} (x{zone.touches})", zone.low))
+            tags.append((f"support zone {px(zone.low)}-{px(zone.high)} (x{zone.touches})", zone.low))
         zone = next((z for z in an.htf_support if lo <= z.high + buf and c > z.low), None)
         if zone:
-            tags.append((f"HTF support zone {zone.low:.5g}-{zone.high:.5g} (x{zone.touches})", zone.low))
+            tags.append((f"HTF support zone {px(zone.low)}-{px(zone.high)} (x{zone.touches})", zone.low))
         for line in an.trendlines:
             v = line.value_at(t)
             if line.kind == "support" and line.broken_at is None and lo <= v + buf and c > v:
-                tags.append((f"rising trendline at {v:.5g}", v))
+                tags.append((f"{_tf(line)}rising trendline at {px(v)} ({len(line.touches)} touches)", v))
             if line.kind == "resistance" and line.broken_at is not None and line.broken_at < t \
                     and lo <= v + buf and c > v:
-                tags.append((f"retest of broken falling trendline at {v:.5g}", v))
+                tags.append((f"retest of broken {_tf(line)}falling trendline at {px(v)}", v))
         ob = next((b for b in reversed(an.order_blocks)
                    if b.kind == "bullish" and lo <= b.high + buf and c > b.low), None)
         if ob:
-            tags.append((f"bullish order block {ob.low:.5g}-{ob.high:.5g}", ob.low))
+            tags.append((f"bullish order block {px(ob.low)}-{px(ob.high)}", ob.low))
 
         if len(tags) >= cfg.min_confluence:
             stop = min([lo] + [lvl for _, lvl in tags]) - cfg.stop_buffer_atr * a
@@ -193,7 +198,7 @@ class Market:
                 if line.kind == "resistance" and line.broken_at == t:
                     stop = min(lo, line.value_at(t)) - cfg.stop_buffer_atr * a
                     return self._finish("long", "breakout", t, an, stop,
-                                        [f"close above falling trendline at {line.value_at(t):.5g}"])
+                                        [f"close above {_tf(line)}falling trendline at {px(line.value_at(t))}"])
         return None
 
     def _short(self, t: int, an: Analysis) -> Signal | None:
@@ -208,21 +213,21 @@ class Market:
 
         zone = next((z for z in an.resistance if hi >= z.low - buf and c < z.high), None)
         if zone:
-            tags.append((f"resistance zone {zone.low:.5g}-{zone.high:.5g} (x{zone.touches})", zone.high))
+            tags.append((f"resistance zone {px(zone.low)}-{px(zone.high)} (x{zone.touches})", zone.high))
         zone = next((z for z in an.htf_resistance if hi >= z.low - buf and c < z.high), None)
         if zone:
-            tags.append((f"HTF resistance zone {zone.low:.5g}-{zone.high:.5g} (x{zone.touches})", zone.high))
+            tags.append((f"HTF resistance zone {px(zone.low)}-{px(zone.high)} (x{zone.touches})", zone.high))
         for line in an.trendlines:
             v = line.value_at(t)
             if line.kind == "resistance" and line.broken_at is None and hi >= v - buf and c < v:
-                tags.append((f"falling trendline at {v:.5g}", v))
+                tags.append((f"{_tf(line)}falling trendline at {px(v)} ({len(line.touches)} touches)", v))
             if line.kind == "support" and line.broken_at is not None and line.broken_at < t \
                     and hi >= v - buf and c < v:
-                tags.append((f"retest of broken rising trendline at {v:.5g}", v))
+                tags.append((f"retest of broken {_tf(line)}rising trendline at {px(v)}", v))
         ob = next((b for b in reversed(an.order_blocks)
                    if b.kind == "bearish" and hi >= b.low - buf and c < b.high), None)
         if ob:
-            tags.append((f"bearish order block {ob.low:.5g}-{ob.high:.5g}", ob.high))
+            tags.append((f"bearish order block {px(ob.low)}-{px(ob.high)}", ob.high))
 
         if len(tags) >= cfg.min_confluence:
             stop = max([hi] + [lvl for _, lvl in tags]) + cfg.stop_buffer_atr * a
@@ -233,7 +238,7 @@ class Market:
                 if line.kind == "support" and line.broken_at == t:
                     stop = max(hi, line.value_at(t)) + cfg.stop_buffer_atr * a
                     return self._finish("short", "breakout", t, an, stop,
-                                        [f"close below rising trendline at {line.value_at(t):.5g}"])
+                                        [f"close below {_tf(line)}rising trendline at {px(line.value_at(t))}"])
         return None
 
     def _finish(self, side: str, setup: str, t: int, an: Analysis, stop: float, reasons: list[str]) -> Signal | None:
@@ -254,6 +259,10 @@ class Market:
         trend = f"HTF bias {an.htf_bias}" if an.htf_bias is not None else f"bias {an.bias}"
         signal = Signal(side, setup, t, float(c), float(stop), float(target), reasons + [trend])
         return signal if signal.rr >= self.cfg.min_rr else None
+
+
+def _tf(line: Trendline) -> str:
+    return "HTF " if line.htf else ""
 
 
 def analyze(df: pd.DataFrame, cfg: StrategyConfig | None = None, t: int | None = None) -> Analysis:

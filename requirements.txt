@@ -2,5 +2,6 @@ pandas>=2.0
 numpy>=1.24
 # optional
 matplotlib>=3.7   # --plot
-yfinance>=0.2     # --symbol (download market data)
+websocket-client>=1.6  # Deriv data
+yfinance>=0.2     # --source yahoo
 pytest>=7         # tests

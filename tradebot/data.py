@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import re
+import time
+
 import numpy as np
 import pandas as pd
 
@@ -34,11 +37,18 @@ def load_yahoo(symbol: str, interval: str = "1d", period: str = "2y") -> pd.Data
         import yfinance as yf
     except ImportError as exc:  # pragma: no cover
         raise SystemExit("pip install yfinance to download market data") from exc
-    raw = yf.download(symbol, interval=interval, period=period, progress=False, auto_adjust=True)
+    symbol = yahoo_symbol(symbol)
+    four_hour = interval == "4h"   # Yahoo has no 4h candles: build them from 1h
+    raw = yf.download(symbol, interval="1h" if four_hour else interval, period=period,
+                      progress=False, auto_adjust=True)
     if raw.empty:
         raise SystemExit(f"no data returned for {symbol}")
     if isinstance(raw.columns, pd.MultiIndex):
         raw.columns = raw.columns.get_level_values(0)
+    raw.columns = [str(c).lower() for c in raw.columns]
+    if four_hour:
+        raw = raw.resample("4h").agg({"open": "first", "high": "max", "low": "min", "close": "last",
+                                      "volume": "sum"}).dropna(subset=["open"])
     return _normalize(raw, raw.index)
 
 
@@ -55,3 +65,97 @@ def synthetic(n: int = 1500, seed: int = 7, start: float = 100.0) -> pd.DataFram
     time = pd.date_range("2022-01-01", periods=n, freq="h", tz="UTC")
     return pd.DataFrame({"time": time, "open": open_, "high": high, "low": low,
                          "close": close, "volume": rng.integers(100, 1000, n).astype(float)})
+
+
+# -- Deriv ----------------------------------------------------------------------
+
+DERIV_URL = "wss://ws.derivws.com/websockets/v3?app_id={app_id}"
+DERIV_GRANULARITY = {"1m": 60, "2m": 120, "3m": 180, "5m": 300, "10m": 600, "15m": 900, "30m": 1800,
+                     "1h": 3600, "2h": 7200, "4h": 14400, "8h": 28800, "1d": 86400}
+
+
+def deriv_symbol(name: str) -> str:
+    """Friendly names to Deriv API symbols: V75 -> R_75, V75(1s) -> 1HZ75V, XAUUSD -> frxXAUUSD."""
+    n = name.strip().upper().replace(" ", "")
+    m = re.fullmatch(r"(?:VOLATILITY|VIX|V)(10|25|50|75|100)(?:INDEX)?(\(1S\)|1S)?", n)
+    if m:
+        return f"1HZ{m[1]}V" if m[2] else f"R_{m[1]}"
+    if len(n) == 6 and n.isalpha():
+        return "frx" + n
+    return name.strip()
+
+
+def load_deriv(symbol: str, interval: str = "5m", count: int = 5000, app_id: int = 1089,
+               connect=None, now: float | None = None) -> pd.DataFrame:
+    """Closed candles from Deriv's public API (no account needed), paging back 5000 at a time.
+
+    The candle that is still forming is dropped, so signals only ever use closed candles.
+
+    app_id 1089 is Deriv's public test id; register your own at api.deriv.com for regular use.
+    """
+    if interval not in DERIV_GRANULARITY:
+        raise ValueError(f"Deriv intervals are {', '.join(DERIV_GRANULARITY)}")
+    if connect is None:
+        try:
+            import websocket
+        except ImportError as exc:  # pragma: no cover
+            raise SystemExit("pip install websocket-client to download Deriv data") from exc
+        connect = lambda url: websocket.create_connection(url, timeout=30)  # noqa: E731
+    import json
+
+    sym = deriv_symbol(symbol)
+    try:
+        ws = connect(DERIV_URL.format(app_id=app_id))
+    except Exception as exc:  # network, firewall, proxy without WebSocket support
+        raise SystemExit(f"could not connect to Deriv ({exc.__class__.__name__}: {str(exc)[:80]}). "
+                         "Check your internet connection, or use --source yahoo / --csv.") from exc
+    candles: list[dict] = []
+    end: str | int = "latest"
+    try:
+        while len(candles) < count:
+            want = min(5000, count - len(candles))
+            ws.send(json.dumps({"ticks_history": sym, "style": "candles", "end": end, "count": want,
+                                "granularity": DERIV_GRANULARITY[interval]}))
+            reply = json.loads(ws.recv())
+            if "error" in reply:
+                raise SystemExit(f"Deriv: {reply['error'].get('message')} ({sym})")
+            batch = reply.get("candles") or []
+            candles = batch + candles
+            if len(batch) < want:
+                break
+            end = int(batch[0]["epoch"]) - 1
+    finally:
+        ws.close()
+    if not candles:
+        raise SystemExit(f"Deriv returned no candles for {sym}")
+    raw = pd.DataFrame(candles).drop_duplicates("epoch").sort_values("epoch")
+    now = time.time() if now is None else now
+    raw = raw[raw["epoch"].astype(int) + DERIV_GRANULARITY[interval] <= now]
+    return _normalize(raw, pd.to_datetime(raw["epoch"], unit="s", utc=True))
+
+
+YAHOO_ALIASES = {"XAUUSD": "GC=F", "XAGUSD": "SI=F"}
+
+
+def yahoo_symbol(name: str) -> str:
+    """XAUUSD -> GC=F (gold futures), GBPJPY -> GBPJPY=X; anything else unchanged."""
+    n = name.strip().upper()
+    if n in YAHOO_ALIASES:
+        return YAHOO_ALIASES[n]
+    return n + "=X" if len(n) == 6 and n.isalpha() else name
+
+
+def volatility_index(n: int = 5000, vol: float = 0.75, bar_seconds: int = 300, seed: int = 1,
+                     start: float = 100_000.0, steps: int = 30) -> pd.DataFrame:
+    """Simulated Deriv-style volatility index: driftless geometric Brownian motion with a
+    fixed annualised volatility (V75 -> vol=0.75), sampled into OHLC candles."""
+    rng = np.random.default_rng(seed)
+    dt = bar_seconds / steps / (365 * 24 * 3600)
+    log_steps = rng.normal(-0.5 * vol ** 2 * dt, vol * np.sqrt(dt), (n, steps))
+    path = start * np.exp(np.cumsum(log_steps.ravel())).reshape(n, steps)
+    open_ = np.r_[start, path[:-1, -1]]
+    high = np.maximum(path.max(axis=1), open_)
+    low = np.minimum(path.min(axis=1), open_)
+    time = pd.date_range("2026-01-01", periods=n, freq=f"{bar_seconds}s", tz="UTC")
+    return pd.DataFrame({"time": time, "open": open_, "high": high, "low": low, "close": path[:, -1],
+                         "volume": 0.0})

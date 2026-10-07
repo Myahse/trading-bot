@@ -1,7 +1,9 @@
 # tradebot: support/resistance, trendlines and order blocks
 
-A rule-based trading algorithm. It reads OHLCV candles, works out the market structure,
-decides whether to take a long or short position, and backtests the result.
+A rule-based trading algorithm for **Deriv** markets: volatility indices (V10-V100, 1s
+variants), gold and forex (GBP, JPY, USD pairs). It reads candles straight from Deriv's API,
+works out the market structure on two timeframes, decides whether to go long or short,
+backtests the rules, and can watch a market live and print signals. It never places orders.
 
 > Educational code, not financial advice. Backtest and paper-trade before risking money.
 
@@ -9,14 +11,14 @@ decides whether to take a long or short position, and backtests the result.
 
 | | `--mode scalp` | `--mode swing` |
 |---|---|---|
-| Entry candles | 5m (any of 1m-15m works) | 1d |
-| Structure / trend from | 1h candles | weekly candles |
+| Entry candles | 5m (1m-15m all work) | 4h |
+| Structure / trend from | 1h candles | daily candles |
 | Swing size | 3 bars each side | 5 bars each side |
 | Risk per trade | 0.5% | 1% |
 | Minimum reward:risk | 1.5 | 2.0 |
 | Stand aside after a loss | 6 bars | 3 bars |
 
-Any flag overrides the preset, e.g. `--mode scalp --interval 1m --period 7d --htf 15min`.
+Any flag overrides the preset, e.g. `--mode scalp --interval 1m --htf 15min`.
 
 ## What it looks at
 
@@ -29,7 +31,7 @@ is used only after it has closed.
 |---|---|
 | **Swing points (fractals)** | A high/low that is the extreme of `pivot` bars on each side, on both timeframes. A swing is only *known* `pivot` bars later, so there is no look-ahead. |
 | **Support / resistance** | Recent swings whose prices sit within `0.6 x ATR` of each other are clustered into zones (2+ touches), separately per timeframe. |
-| **Trendlines** | Rising support through the last two higher lows, falling resistance through the last two lower highs. The bot records the bar where a close **breaks** the line and keeps the line for `retest_window` bars afterwards to catch the retest. |
+| **Trendlines** | Drawn the way a trader would. Every pair of the last 8 swing lows (rising) or swing highs (falling) is a candidate. A line is rejected if any candle between its anchors pokes through it (wicks included), if the anchors are too close together, or if it is absurdly steep. The survivors are ranked by touches (swing points sitting on the line), then the most recent touch, then length. On each side the bot keeps the best intact line and the best just-broken one (for the retest). It does the same on the higher timeframe. |
 | **Order blocks** | Bullish OB = the last red candle before an impulsive move (>= 1 ATR) that closes above the last swing high (break of structure). Bearish is the mirror. It is dead once price closes through it, or after `ob_max_age` bars. |
 | **Bias** | Higher highs + higher lows = up, lower highs + lower lows = down. Trades must agree with the higher-timeframe bias. |
 
@@ -61,52 +63,80 @@ The backtest charges `--fee-bps` per side. When one bar hits both the stop and t
 `--plot chart.png` draws only what matters at the latest bar:
 - the 2 nearest zones on each side of price
 - the nearest higher-timeframe zone on each side (outlined)
-- the current trendlines (dotted after a break)
 - the order block closest to price on each side
 - the trades
 
-It never draws every level ever detected.
+Trendlines show:
+- every swing point that touches them (o)
+- where they broke (diamond)
+- a dotted projection through the retest window
+- higher-timeframe lines thicker, in purple
+
+Labels sit in a margin on the right, so they never cover candles.
 
 ## Usage
 
 ```bash
 pip install -r requirements.txt
 
-python -m tradebot analyze  --mode scalp --symbol BTC-USD       # what the bot sees right now, and any signal
-python -m tradebot backtest --mode scalp --symbol EURUSD=X --fee-bps 0.5 --plot chart.png --trades trades.csv
-python -m tradebot backtest --mode swing --symbol SPY --plot chart.png
-python -m tradebot backtest --csv my_data.csv --htf 4h          # columns: time,open,high,low,close[,volume]
-python -m tradebot backtest                                     # synthetic demo data, no network needed
+python -m tradebot analyze  --mode scalp --symbol V75            # what the bot sees now, and any signal
+python -m tradebot analyze  --mode swing --symbol XAUUSD
+python -m tradebot backtest --mode scalp --symbol GBPJPY --spread 0.03 --plot chart.png --trades trades.csv
+python -m tradebot watch    --mode scalp --symbol "V75(1s)"      # live: prints a signal at each candle close
 ```
 
-Yahoo only serves 7 days of 1m candles and 60 days of 5m candles. For serious scalping
-tests, export longer history from your broker or exchange as CSV.
+Symbols are written the way you see them on Deriv: `V10`, `V25`, `V50`, `V75`, `V100`, the 1-second
+versions `V75(1s)`, `XAUUSD`, `GBPJPY`, `USDJPY`, `GBPUSD`, ... Raw API symbols (`R_75`, `1HZ75V`,
+`frxXAUUSD`) also work. Deriv data needs no account.
+
+`--app-id 1089` is Deriv's public test app id. Register your own app at api.deriv.com for regular use.
+
+Other data sources:
+- `--source yahoo`: gold and forex history from Yahoo, up to 60 days of 5m candles or 2 years of 4h.
+- `--source sim`: a simulated volatility index, for offline tests.
+- `--csv file.csv`: any OHLC export with columns `time,open,high,low,close`.
+
+**Costs:** pass the spread from your MT5 symbol specification in price units, e.g. `--spread 0.3`
+on XAUUSD. It is charged once per round trip. Without it the backtest assumes free trading.
 
 From Python:
 
 ```python
 from tradebot import analyze, run_backtest
-from tradebot.data import load_yahoo
+from tradebot.data import load_deriv
 from tradebot.strategy import mode_config
 
-df = load_yahoo("BTC-USD", "5m", "60d")
-signal = analyze(df, mode_config("scalp")).signal    # None, or side/setup/entry/stop/target/reasons
-print(run_backtest(df, mode_config("scalp"), risk_per_trade=0.005, fee_bps=1).stats)
+df = load_deriv("XAUUSD", "5m", count=20_000)
+signal = analyze(df, mode_config("scalp")).signal     # None, or side/setup/entry/stop/target/reasons
+print(run_backtest(df, mode_config("scalp"), risk_per_trade=0.005, spread=0.3).stats)
 ```
 
-## Costs decide scalping
+## Backtest results so far
 
-5-minute stops are often only 2-5 bps away. Backtests on 60 days of Yahoo data:
+These runs used gold and forex from Yahoo, plus simulated V75. Deriv's own data could not be
+reached from the environment this was built in. The spreads are **my assumptions, not Deriv's
+figures**: XAUUSD 0.30, GBPJPY 0.03, USDJPY 0.015, GBPUSD 0.00015.
 
-| Run | Trades | Profit factor | Avg R |
-|---|---|---|---|
-| scalp EURUSD, 0 fees | 158 | 1.01 | +0.05 |
-| scalp EURUSD, 1 bps/side | 158 | 0.48 | -0.86 |
-| scalp BTC, 0 fees | 153 | 0.81 | -0.18 |
-| swing BTC, 5y daily, 5 bps/side | 23 | 1.35 | +0.25 |
+| Mode | Market | Trades | Profit factor (no spread) | Profit factor (with spread) | Return (with spread) |
+|---|---|---|---|---|---|
+| scalp 5m / 60 days | XAUUSD | 130 | 0.95 | 0.90 | -1.8% |
+| scalp | GBPJPY | 121 | 0.97 | 0.72 | -1.8% |
+| scalp | USDJPY | 106 | 1.03 | 0.88 | -0.8% |
+| scalp | GBPUSD | 152 | 1.07 | 0.68 | -1.5% |
+| scalp | V75 (simulated, 3 runs) | ~185 | 0.83-0.88 | - | -7% to -10% |
+| swing 4h / 2 years | XAUUSD | 28 | 1.59 | 1.57 | +8.9% |
+| swing | GBPJPY | 39 | 0.31 | 0.29 | -10.2% |
+| swing | USDJPY | 30 | 0.94 | 0.92 | -0.9% |
+| swing | GBPUSD | 27 | 0.60 | 0.57 | -4.3% |
+| swing | V75 (simulated, 3 runs) | 25-44 | 0.54-1.05 | - | -15% to +1% |
 
-These are small samples, not proof of an edge either way. Test with your broker's
-real spread and commission before scalping live.
+Read these honestly:
+- Apart from swing on gold, the rules show **no edge yet**, and the spread turns break-even scalps into losses.
+- 28 trades on gold is too few to trust on its own.
+- **Volatility indices are random by design.** Deriv generates them with a fixed volatility and no
+  memory, so support, resistance and trendlines cannot predict them in the long run. Any
+  backtest edge there is luck, and the spread is a guaranteed cost. Use V-indices to practise
+  execution, not to expect a statistical edge.
 
 ## Tests
 
@@ -118,5 +148,6 @@ python -m pytest
 
 ## Next steps
 
-- Connect a broker or exchange API (e.g. `ccxt` for crypto, OANDA or Alpaca) and call `analyze()` on each new closed candle.
+- Re-run the backtests on Deriv data with your real MT5 spreads.
+- Paper-trade the `watch` signals on a Deriv demo account before any real money.
 - Walk-forward optimise the parameters instead of fitting them to a single backtest.

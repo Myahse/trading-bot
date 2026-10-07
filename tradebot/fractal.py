@@ -50,6 +50,16 @@ class HigherTimeframe:
     def pivots_known_at(self, t: int) -> list[Pivot]:
         return self.pivots[: int(np.searchsorted(self._confirmed, t, side="right"))]
 
+    @property
+    def bars_per_candle(self) -> float:
+        """Average number of entry bars in one higher-timeframe candle."""
+        return float(self.known_at[-1] / len(self.known_at)) if len(self.known_at) else 1.0
+
+    def atr_by_bar(self, n: int) -> np.ndarray:
+        """Higher-timeframe ATR as known at each entry bar (from the last closed candle)."""
+        j = np.searchsorted(self.known_at, np.arange(n), side="right") - 1
+        return np.where(j >= 0, self.atr[np.clip(j, 0, None)], np.nan) if len(self.atr) else np.full(n, np.nan)
+
     def atr_known_at(self, t: int) -> float:
         j = int(np.searchsorted(self.known_at, t, side="right")) - 1
         return float(self.atr[j]) if j >= 0 else float("nan")

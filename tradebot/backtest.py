@@ -1,4 +1,8 @@
-"""Bar-by-bar backtest: signal on bar close, fill at next open, stop/target intrabar."""
+"""Bar-by-bar backtest: signal on bar close, fill at next open, stop/target intrabar.
+
+Costs: `spread` in price units (what you see in MT5 / Deriv, e.g. 0.35 on XAUUSD) per
+round trip, and/or `fee_bps` per side as a fraction of price.
+"""
 
 from __future__ import annotations
 
@@ -44,7 +48,7 @@ class BacktestResult:
 
 
 def run_backtest(df: pd.DataFrame, cfg: StrategyConfig | None = None, initial_equity: float = 10_000.0,
-                 risk_per_trade: float = 0.01, fee_bps: float = 5.0, max_leverage: float = 1.0,
+                 risk_per_trade: float = 0.01, fee_bps: float = 0.0, spread: float = 0.0, max_leverage: float = 1.0,
                  market: Market | None = None) -> BacktestResult:
     market = market or Market(df, cfg)
     o, h, l, c = market.o, market.h, market.l, market.c
@@ -60,7 +64,8 @@ def run_backtest(df: pd.DataFrame, cfg: StrategyConfig | None = None, initial_eq
         nonlocal cash
         sign = 1 if trade.side == "long" else -1
         trade.exit_bar, trade.exit, trade.exit_reason = bar, price, reason
-        trade.pnl = sign * (price - trade.entry) * trade.size - fee * (trade.entry + price) * trade.size
+        cost = fee * (trade.entry + price) + spread   # spread: price units, paid once per round trip
+        trade.pnl = (sign * (price - trade.entry) - cost) * trade.size
         cash += trade.pnl
 
     for t in range(len(c)):
