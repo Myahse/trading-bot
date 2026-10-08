@@ -712,3 +712,14 @@ def test_rejection_setup_names_the_zone_it_came_off():
                 assert any(f"{z.touches})" in r and tag.split()[0] in r for r in s.reasons)
                 assert (s.stop < z.low) if s.side == "long" else (s.stop > z.high)
     assert any(s.zone is not None or s.htf_zone is not None for s in rejections)
+
+
+def test_setups_are_skipped_when_the_spread_eats_the_risk():
+    df = data.synthetic(3000, seed=4)
+    cfg, mm = mode_config("scalp", htf=12), MoneyManagement(risk_per_trade=0.005)
+    free = run_backtest(df, cfg, mm, spread=0.0)
+    assert free.stats["trades"] > 0
+    costly = run_backtest(df, cfg, MoneyManagement(risk_per_trade=0.005), spread=50.0)   # far wider than any stop
+    assert costly.stats["trades"] == 0
+    off = run_backtest(df, cfg, MoneyManagement(risk_per_trade=0.005, max_spread_risk=None), spread=50.0)
+    assert off.stats["trades"] > 0

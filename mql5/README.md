@@ -156,6 +156,7 @@ what the Python backtests showed. Tick *Visual mode* to watch it trade candle by
 | Stop / target | The stop goes beyond the levels used (and at least `min stop ATR` away). The target is the nearest opposing level, or a default R. Setups below the minimum reward:risk are skipped. Both sit on the server |
 | Size | Risk % of the balance, from MT5's tick value (correct for any symbol, JPY crosses included). If the minimum lot would risk more than the limit, or margin is short, the trade is skipped |
 | Management | Partial profit at +1R (lots permitting), stop to break-even, trailing stop (ATR behind the best price, or behind each new swing). Stops only tighten |
+| Spread | A setup is skipped when the live spread is more than 20% of its risk (*Max spread % of risk*); tight scalp stops were mostly paying the spread |
 | Limits | Daily loss limit and max trades per day (all charts running this magic number together), a cooldown after a loss |
 | News | No new trades within 30 minutes of high-impact news for the symbol's currencies (forex/gold), from MT5's built-in economic calendar. Not used in the Strategy Tester |
 | Journal | Every event goes to the Experts log and `MQL5/Files/TradeBot_journal.csv`. Screenshots of every setup and fill go to `MQL5/Files/` |

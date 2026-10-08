@@ -95,6 +95,9 @@ Reward:risk is measured from the confirmation level, not from the signal candle'
   - `--trail swing`: just beyond each new swing low (long) / high (short)
 
   The stop only ever tightens.
+- **Spread filter:** a setup is skipped when the spread is more than `--max-spread-risk` (default 20%)
+  of its risk (entry to stop). Tight 5m stops on forex were mostly paying the spread. Pass your real
+  `--spread`: without it the filter does nothing.
 - **Daily limits:** no new trades for the rest of the day after losing `--daily-loss` of the
   account, or after `--max-trades-day` trades.
 - Any rule can be turned off, e.g. `--breakeven off --partial off --trail none --daily-loss off`.
@@ -339,6 +342,31 @@ GBPUSD 0.00015.
 | swing | GBPJPY | 46 / 15% / 0.42 / -21.5% | 25 / 28% / 0.76 / -3.2% |
 | swing | USDJPY | 41 / 20% / 0.58 / -13.8% | 26 / 23% / 0.52 / -9.1% |
 | swing | GBPUSD | 38 / 29% / 0.86 / -3.7% | 32 / 31% / 0.58 / -8.7% |
+
+### What improved it (October 2026)
+
+Four ideas were tested on the same candles. Each run was split in two halves of the period, so a
+change had to help in both, not just fit one stretch. Return summed over the 4 markets; R summed
+over both modes:
+
+| Change | Scalp | Swing | R, 1st / 2nd half |
+|---|---|---|---|
+| none | -21.1% | +15.3% | -12.7 / -18.4 |
+| **skip when the spread is > 20% of the risk** | **-3.3%** | +15.3% | **+4.7 / +3.8** |
+| trade forex only 07-17 UTC | -10.2% | +15.3% | -1.3 / -4.2 |
+| scalp on 15m instead of 5m | -10.0% | +15.3% | -0.2 / -5.2 |
+| no partial profit / break-even | -22.4% | +21.2% | -12.4 / -16.0 |
+
+- **Adopted: the spread filter.** It turned both halves positive and is robust to its threshold
+  (3x spread -9.1%, 5x -3.3%, 8x -2.0%). Swing is unchanged because its stops are far wider than the
+  spread. Per market on scalp: GBPUSD -14.1% -> -0.8%, GBPJPY -6.4% -> -0.8%, USDJPY -0.8% -> -2.0%,
+  gold unchanged.
+- **Not adopted:**
+  - the session filter: it adds nothing on top of the spread filter
+  - M15 scalping: worse than the spread filter
+  - dropping partial profit / break-even: it helped swing on only 2 of 4 markets
+- **Caution:** scalp is now close to break-even, not profitable. Forex scalping still shows no edge on
+  this data.
 
 ### Trading patterns (October 2026)
 

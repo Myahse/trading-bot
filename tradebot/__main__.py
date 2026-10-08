@@ -74,6 +74,8 @@ def _parser() -> argparse.ArgumentParser:
     g.add_argument("--trail-start", type=float, help="start trailing at this many R")
     g.add_argument("--trail-atr", type=float, help="ATR multiple for --trail atr")
     g.add_argument("--daily-loss", type=_r_or_off, help="stop trading for the day after losing this fraction, or off")
+    g.add_argument("--max-spread-risk", type=_r_or_off,
+                   help="skip a setup when --spread is more than this share of its risk (default 0.2), or off")
     g.add_argument("--max-trades-day", type=int)
     g.add_argument("--spread", type=float, default=0.0, help="spread in price units per round trip (MT5 spec)")
     g.add_argument("--fee-bps", type=float, default=0.0, help="commission per side, bps of price")
@@ -134,7 +136,8 @@ def _money(args) -> MoneyManagement:
     base.update({k: v for k, v in given.items() if v is not None})
     argv = " ".join(_argv)
     for flag, key, value in (("--breakeven", "breakeven_r", args.breakeven), ("--partial", "partial_r", args.partial),
-                             ("--daily-loss", "max_daily_loss", args.daily_loss)):
+                             ("--daily-loss", "max_daily_loss", args.daily_loss),
+                             ("--max-spread-risk", "max_spread_risk", args.max_spread_risk)):
         if re.search(rf"{flag}(\s|=|$)", argv):   # given explicitly, possibly as "off"
             base[key] = value
     if args.csv:   # unknown instrument: size in plain units unless told otherwise

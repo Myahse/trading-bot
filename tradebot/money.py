@@ -17,6 +17,7 @@ class MoneyManagement:
     trail_start_r: float = 1.0            # start trailing once price has gone this many R in favour
     trail_atr: float = 2.0
     max_daily_loss: float | None = 0.03   # no new trades for the rest of the day after losing this fraction
+    max_spread_risk: float | None = 0.2   # skip a setup when the spread is more than this share of its risk
     max_trades_per_day: int | None = None
     # Real lot sizes. With contract_size None, positions are sized in fractional units (no lots).
     contract_size: float | None = None    # units per lot (forex 100,000, gold 100, indices 1)

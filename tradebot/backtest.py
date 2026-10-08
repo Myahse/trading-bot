@@ -196,6 +196,9 @@ class Engine:
                 and last_ok:
             sig = m.analyze(t).signal
             why = self.veto(t, sig) if sig is not None and self.veto is not None else None
+            risk = abs((sig.trigger if sig.trigger is not None else sig.entry) - sig.stop) if sig is not None else 0.0
+            if sig is not None and not why and mm.max_spread_risk is not None and self.spread > mm.max_spread_risk * risk:
+                why = f"spread is {self.spread / risk:.0%} of the risk (max {mm.max_spread_risk:.0%})"
             if why:
                 self._event(t, "skipped", side=sig.side, reason=why)
             elif sig is not None:

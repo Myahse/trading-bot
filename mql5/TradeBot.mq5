@@ -39,6 +39,7 @@ input bool     InpPatterns        = true;           // Candlestick/chart pattern
 input group "Money management (Custom preset)"
 input double   InpRiskPct         = 0.5;            // Risk per trade, % of balance
 input double   InpMinLotMaxRisk   = 5.0;            // Skip if even the minimum lot risks more than this %
+input double   InpMaxSpreadRisk   = 20.0;           // Skip a setup when the spread is more than this % of its risk (0 = off)
 input double   InpBreakevenR      = 1.0;            // Move stop to entry at this many R (0 = off)
 input double   InpPartialR        = 1.0;            // Partial profit at this many R (0 = off)
 input double   InpPartialPct      = 50.0;           // % of the position closed at the partial
@@ -206,6 +207,18 @@ bool DailyLimitsOk(string &why)
    if(C.maxTradesDay > 0 && entries >= C.maxTradesDay)
      { why = StringFormat("%d trades today (limit %d)", entries, C.maxTradesDay); return false; }
    return true;
+  }
+
+// The spread must not eat more than InpMaxSpreadRisk % of the setup's risk (it made most scalp losses).
+bool SpreadOk(const Signal &s, string &why)
+  {
+   if(InpMaxSpreadRisk <= 0) return true;
+   MqlTick tick;
+   if(!SymbolInfoTick(_Symbol, tick)) return true;
+   double spread = tick.ask - tick.bid, risk = MathAbs((s.trigger > 0 ? s.trigger : s.entry) - s.stop);
+   if(risk <= 0 || spread <= InpMaxSpreadRisk / 100.0 * risk) return true;
+   why = StringFormat("skipped: the spread (%s) is %.0f%% of the risk (max %.0f%%)", PS(spread), 100 * spread / risk, InpMaxSpreadRisk);
+   return false;
   }
 
 // Stand aside for C.cooldown bars after a losing trade on this symbol.
@@ -936,8 +949,8 @@ void OnTick()
          status = why;
       else if(haveSignal)
         {
-         if(NewsBlocked(why))
-           { Journal("skipped", why); status = why; }
+         if(NewsBlocked(why) || !SpreadOk(s, why))
+           { Journal("skipped", why); status = why; lastNote = why; }
          else if(C.confirm == CONFIRM_NONE)
             OpenMarket(s);
          else
