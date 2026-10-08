@@ -3,16 +3,23 @@
 `TradeBot.mq5` is the trading core of the Python bot, rewritten as a MetaTrader 5 Expert Advisor.
 It runs inside MT5 on a chart and places the trades itself.
 
-> **Not compiled yet.** It was written without access to MetaTrader, so it has never been compiled
-> or run. Compile it first (below), and if MetaEditor reports errors, send them back and they get fixed.
-> Then test it in the Strategy Tester and on a **demo** account before anything else.
+| File | What it is |
+|---|---|
+| `TradeBot.mq5` | the Expert Advisor: orders, money management, chart drawings, panel |
+| `TradeBotCore.mqh` | the analysis it shares with the parity check: swings, zones, trendlines, order blocks, setups |
+| `TradeBotParity.mq5` | a script that checks the EA's analysis against the Python bot (below) |
+
+> **Compiled, but not traded yet.** It compiles in MetaEditor (MT5 build 6246) with 0 errors and
+> 0 warnings. Its analysis was checked against the Python bot on gold and forex (below). It has
+> not yet run in the Strategy Tester or on a demo account; both need you to log in to an account.
+> Do both before anything else.
 
 ## Install
 
 1. In MT5: **File > Open Data Folder**, then go to `MQL5/Experts/`.
-2. Copy `TradeBot.mq5` there.
+2. Copy `TradeBot.mq5` **and** `TradeBotCore.mqh` there (the EA includes the core).
 3. In MT5, open MetaEditor (F4). Open `TradeBot.mq5` and press **Compile** (F7). The **Errors** tab at
-   the bottom must say `0 errors`. Warnings are fine.
+   the bottom must say `0 errors`.
 4. Back in MT5, the EA appears under **Navigator > Expert Advisors**. Turn on **Algo Trading** in the toolbar.
 
 ## Run it on a demo account
@@ -33,6 +40,59 @@ It runs inside MT5 on a chart and places the trades itself.
 
 On a **real** account it only analyses and never sends an order, unless you set *Allow trading a
 REAL account* to `true`. Keep it on demo until weeks of results justify more.
+
+## Check that it matches the Python bot
+
+`TradeBotParity.mq5` runs the EA's own analysis (`TradeBotCore.mqh`) on every closed candle of a
+chart. It writes what it sees to `MQL5/Files/TradeBot_parity_<symbol>_<tf>.csv`, and the candles it
+used to `..._candles.csv`. The Python bot then analyses the same candles and compares, column by column:
+the ATR, swings, trend, nearest zones on both timeframes, trendlines, order blocks and every setup.
+
+1. Copy `TradeBotParity.mq5` and `TradeBotCore.mqh` to `MQL5/Scripts/` and compile.
+2. Open a chart (M5 for Scalp, H4 for Swing). Drag **TradeBotParity** onto it, choose the preset
+   and how many candles to check.
+3. Copy the two CSV files from `MQL5/Files/` next to the Python bot and run:
+
+```bash
+python -m tradebot.parity TradeBot_parity_XAUUSD_M5.csv --mode scalp
+```
+
+```
+12000 candles compared
+  ATR and swings     match
+  Entry-chart zones  match
+  Higher timeframe   match
+  Trendlines         match
+  Order blocks       match
+  Signals            match
+  Setups: MT5 52, Python 52, identical 52, MT5 only 0, Python only 0
+```
+
+**Results (October 2026, Yahoo candles imported into MT5 as custom symbols):**
+
+| Market | Scalp M5 (12,000 candles) | Swing H4 (3,400 candles) |
+|---|---|---|
+| XAUUSD | everything matches; 52/52 setups identical | 25/25 setups identical; HTF trendline count differs on 0.2% of candles |
+| GBPJPY | everything matches; 52/52 | 25/25; 0.5% |
+| USDJPY | everything matches; 45/45 | 23/23; 2.8% |
+| GBPUSD | everything matches; 61/61 | 13/13; 0.2% |
+
+The swing differences are the trendline spacing described above.
+
+`tests/test_mt5_port.py` keeps a GBPUSD M5 run from MT5 (`tests/data/`) and checks it on every
+`pytest` run, along with the presets and fixed rules. If you change the Python strategy, make the same
+change in `TradeBotCore.mqh`, then regenerate those two files with the script.
+
+The check found and fixed four differences in the first port:
+- **ATR:** the EA's Wilder formula differed from pandas in the last bit. Swings often sit on
+  exactly the same forex prices, so that bit can put a swing in a different zone. On GBPUSD M5 it
+  changed 455 of 3,265 zone updates. The EA now computes the ATR exactly as pandas does.
+- **Higher-timeframe candles:** the EA used an H1/D1 candle one chart candle earlier than Python.
+- **Higher-timeframe zone widths:** these used a different ATR from Python.
+- **Higher-timeframe trendlines:** the EA drew these on higher-timeframe candles and never traded
+  their breakouts. They now work as in Python.
+
+Even with the first three fixed, 15 of about 245 setups still differed between the EA and the Python bot.
 
 ## Backtest it on Deriv's own prices
 
@@ -77,10 +137,14 @@ Choose **Custom** to set every value yourself in the inputs.
 
 ### Differences from the Python bot
 
-- **Higher-timeframe data:** read straight from MT5's H1/D1/... candles (Python builds them from
-  the chart's candles). Higher-timeframe trendlines therefore break on higher-timeframe closes.
-- **Breakouts:** only entry-chart trendlines trigger breakout entries. Higher-timeframe lines are used
-  for retests and as targets.
+- **Higher-timeframe data:** read from MT5's H1/D1/... candles. Python builds them from the chart's
+  candles. On the same prices they are the same candles. As in Python, a higher-timeframe candle
+  counts from the first chart candle after it closed. Higher-timeframe trendlines are drawn through
+  its swings on the chart's candles, so they break, and can trigger breakouts, on a chart candle's close.
+- **Higher-timeframe trendline spacing:** their minimum length and retest window are scaled by the
+  average number of chart candles per higher-timeframe candle. The EA averages the candles it has
+  loaded; Python averages the whole download. On swing (H4/D1) forex this moves the window by one
+  candle now and then (about 5.43 vs 5.51 candles per day). In the checks below that changed no setups.
 - **History used:** the last `History: chart candles` (default 5,000) and `higher-timeframe candles`
   (default 1,000, about 4 years of D1) candles. Higher-timeframe zones are built from **all** of
   them, so old daily/weekly levels still count, as in the Python bot. More history is slower: in
