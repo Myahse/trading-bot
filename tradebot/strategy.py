@@ -32,6 +32,7 @@ import pandas as pd
 
 from .fractal import HigherTimeframe
 from .orderblocks import OrderBlock, find_order_blocks
+from .fakebreak import FakeBreak, fake_breaks
 from .patterns import ChartPattern, candle_pattern, chart_patterns
 from .structure import LevelBook, Pivot, Trendline, TrendlineFinder, Zone, atr, px, find_pivots, market_bias
 
@@ -67,6 +68,11 @@ class StrategyConfig:
     confirm_bars: int = 3               # bars the confirmation may take before the setup is cancelled
     zone_view: str = "all"              # charts: "all" tradable zones with their plans, or the "best" one
     patterns: bool = True               # candlestick and chart patterns count as levels (and neckline breaks)
+    fake_breaks: str = "show"           # a fake break (through a level and back within fake_bars candles):
+                                        # "show" it only (default: the others tested worse), "avoid" no setup in
+                                        # the trapped direction for fake_bars candles and no retest of a fake-
+                                        # broken line, "trade" also count it as a level
+    fake_bars: int = 3
 
 
 MODES: dict[str, dict] = {
@@ -133,6 +139,7 @@ class Analysis:
     signal: Signal | None
     candle: tuple[str, str] | None = None                       # candlestick pattern on this candle
     patterns: list[ChartPattern] = field(default_factory=list)  # chart patterns alive at this candle
+    fake_breaks: list[FakeBreak] = field(default_factory=list)  # recent fake breaks, most recent first
 
     @property
     def direction(self) -> str:
@@ -195,6 +202,9 @@ class Market:
         if ready:
             an.candle = candle_pattern(self.o, self.h, self.l, self.c, t)
             an.patterns = chart_patterns(pivots, self.c, self.atr, t, cfg.ob_max_age, cfg.retest_window)
+            zones_all = [(z, False) for z in support + resistance] + [(z, True) for z in htf_support + htf_resistance]
+            an.fake_breaks = fake_breaks(self.h, self.l, self.c, self.atr, t, lines, an.patterns, zones_all,
+                                         cfg.fake_bars)
             an.signal = self._long(t, an) or self._short(t, an)
         return an
 
@@ -204,6 +214,8 @@ class Market:
         cfg, a = self.cfg, an.atr
         o, h, lo, c = self.o[t], self.h[t], self.l[t], self.c[t]
         if cfg.trend_filter and an.direction == "down":
+            return None
+        if self._trapped("long", t, an):
             return None
         if not (c > o and c >= lo + 0.5 * (h - lo)):
             return None
@@ -221,7 +233,7 @@ class Market:
             if line.kind == "support" and line.broken_at is None and lo <= v + buf and c > v:
                 tags.append((f"{_tf(line)}rising trendline at {px(v)} ({len(line.touches)} touches)", v))
             if line.kind == "resistance" and line.broken_at is not None and line.broken_at < t \
-                    and lo <= v + buf and c > v:
+                    and not self._faked(line, an, cfg) and lo <= v + buf and c > v:
                 tags.append((f"retest of broken {_tf(line)}falling trendline at {px(v)}", v))
         ob = next((b for b in reversed(an.order_blocks)
                    if b.kind == "bullish" and lo <= b.high + buf and c > b.low), None)
@@ -229,6 +241,9 @@ class Market:
             tags.append((f"bullish order block {px(ob.low)}-{px(ob.high)}", ob.low))
         if cfg.patterns:
             tags += self._pattern_tags("long", t, an, buf)
+        if cfg.fake_breaks == "trade":
+            tags += [(f"{fb.label} at {px(fb.level)} (trap)", fb.extreme) for fb in an.fake_breaks
+                     if fb.side == "long" and fb.back_at == t][:1]
 
         if len(tags) >= cfg.min_confluence:
             stop = min([lo] + [lvl for _, lvl in tags]) - cfg.stop_buffer_atr * a
@@ -255,6 +270,8 @@ class Market:
         o, hi, lo, c = self.o[t], self.h[t], self.l[t], self.c[t]
         if cfg.trend_filter and an.direction == "up":
             return None
+        if self._trapped("short", t, an):
+            return None
         if not (c < o and c <= hi - 0.5 * (hi - lo)):
             return None
         buf = cfg.touch_buffer_atr * a
@@ -271,7 +288,7 @@ class Market:
             if line.kind == "resistance" and line.broken_at is None and hi >= v - buf and c < v:
                 tags.append((f"{_tf(line)}falling trendline at {px(v)} ({len(line.touches)} touches)", v))
             if line.kind == "support" and line.broken_at is not None and line.broken_at < t \
-                    and hi >= v - buf and c < v:
+                    and not self._faked(line, an, cfg) and hi >= v - buf and c < v:
                 tags.append((f"retest of broken {_tf(line)}rising trendline at {px(v)}", v))
         ob = next((b for b in reversed(an.order_blocks)
                    if b.kind == "bearish" and hi >= b.low - buf and c < b.high), None)
@@ -279,6 +296,9 @@ class Market:
             tags.append((f"bearish order block {px(ob.low)}-{px(ob.high)}", ob.high))
         if cfg.patterns:
             tags += self._pattern_tags("short", t, an, buf)
+        if cfg.fake_breaks == "trade":
+            tags += [(f"{fb.label} at {px(fb.level)} (trap)", fb.extreme) for fb in an.fake_breaks
+                     if fb.side == "short" and fb.back_at == t][:1]
 
         if len(tags) >= cfg.min_confluence:
             stop = max([hi] + [lvl for _, lvl in tags]) + cfg.stop_buffer_atr * a
@@ -299,6 +319,17 @@ class Market:
                     return self._finish("short", "breakout", t, an, max(hi, v) + cfg.stop_buffer_atr * a,
                                         [f"close below {pat.kind} neckline at {px(v)}"], target=pat.target)
         return None
+
+    @staticmethod
+    def _faked(line: Trendline, an: Analysis, cfg: StrategyConfig) -> bool:
+        """A trendline that broke and came straight back is not broken: there is no retest to trade."""
+        return cfg.fake_breaks != "show" and any(fb.key == (line.i1, line.i2, line.kind, line.htf)
+                                                 for fb in an.fake_breaks)
+
+    def _trapped(self, side: str, t: int, an: Analysis) -> bool:
+        """Right after a fake break, the side that got trapped is not the side to trade."""
+        return self.cfg.fake_breaks != "show" and any(fb.side != side and t - fb.back_at < self.cfg.fake_bars
+                                                      for fb in an.fake_breaks)
 
     def _pattern_tags(self, side: str, t: int, an: Analysis, buf: float) -> list[tuple[str, float]]:
         """Patterns as levels: the candle itself, a neckline retest after its break, a double bottom/top."""

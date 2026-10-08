@@ -195,6 +195,11 @@ def analysis_steps(market: Market, an: Analysis, entry_tf: str, htf_tf: str,
     steps.append((OK if pats else DOT, f"Patterns: {len(pats)}",
                   "; ".join(pats) + ("." if market.cfg.patterns else ". Shown only: they do not change the entries in this mode.")
                   if pats else "None."))
+    recent = [fb for fb in an.fake_breaks if an.bar - fb.back_at < 2 * market.cfg.fake_bars]
+    if recent:
+        fb = recent[0]
+        steps.append((NO, "Fake break", f"{fb.label} at {px(fb.level)}, {an.bar - fb.back_at} candles ago: price came "
+                      f"back and the {'sellers' if fb.side == 'long' else 'buyers'} are trapped. Do not chase that break."))
     from .zoneplan import best_plan, plan_zones, scenarios
     plans = plan_zones(market, an)
     tradable = [p for p in plans if p.tradable]

@@ -65,7 +65,7 @@ input bool     InpPanel           = true;           // Show the analysis panel
 input bool     InpScreenshots     = true;           // Save a screenshot for every trade (MQL5/Files)
 
 input group "Alerts"
-input bool     InpAlertPopup      = true;           // Pop-up and sound: trendline break, trend change, new setup
+input bool     InpAlertPopup      = true;           // Pop-up and sound: break, fake break, trend change, new setup
 input bool     InpAlertPush       = true;           // Push to your phone too (MT5 app: set your MetaQuotes ID in Options)
 
 //--- EA state
@@ -591,6 +591,22 @@ void Draw(const Signal &s, bool haveSignal)
       Text(nm + "T", R[pt.pi[pt.np / 2]].time, ext, name + (pt.broken >= 0 ? " - neckline broken" : ""), pc,
            pt.side == 1 ? ANCHOR_UPPER : ANCHOR_LOWER, 8, "Arial Bold");
      }
+   for(int i = 0; i < ArraySize(FB); i++)                  // fake breaks: where price came back through the level
+     {
+      if(FB[i].back < N - 200) continue;
+      color fc = C'230,140,20';
+      string nm = PFX + "fake" + IntegerToString(i);
+      Segment(nm + "l", R[FB[i].broke].time, FB[i].level, R[FB[i].back].time, FB[i].level, fc, 2, STYLE_SOLID, false);
+      ObjectCreate(0, nm, OBJ_ARROW, 0, R[FB[i].back].time, FB[i].level);
+      ObjectSetInteger(0, nm, OBJPROP_ARROWCODE, 251);   // a cross: the break failed
+      ObjectSetInteger(0, nm, OBJPROP_COLOR, fc);
+      ObjectSetInteger(0, nm, OBJPROP_WIDTH, 3);
+      ObjectSetInteger(0, nm, OBJPROP_ANCHOR, ANCHOR_CENTER);
+      ObjectSetInteger(0, nm, OBJPROP_SELECTABLE, false);
+      Text(nm + "T", R[FB[i].back].time, FB[i].level, "FAKE BREAK " + (FB[i].side == 1 ? "\x25B2" : "\x25BC"), fc,
+           FB[i].side == 1 ? ANCHOR_LEFT_UPPER : ANCHOR_LEFT_LOWER, 9, "Arial Bold");
+     }
+
    if(candleSide != 0)
       Text(PFX + "candle", R[t].time, candleSide == 1 ? R[t].low : R[t].high, candleName, candleSide == 1 ? up : dn,
            candleSide == 1 ? ANCHOR_UPPER : ANCHOR_LOWER, 8);
@@ -770,6 +786,9 @@ string LastBreak(int t, int dir, string tfE, string tfH)
    int ago = t - when;
    string text = StringFormat("%s %s trendline broken %s at %s %s", up ? "falling" : "rising", isHtf ? tfH : tfE, up ? "up" : "down",
                               PS(LineAt(last, when)), ago == 0 ? "on this candle" : StringFormat("%d candle%s ago", ago, ago == 1 ? "" : "s"));
+   for(int i = 0; i < ArraySize(FB); i++)
+      if(FB[i].broke == when && FB[i].side == (up ? -1 : 1))
+         return text + " - it came back: fake break, not a breakout";
    if(dir == (up ? 1 : -1))
       text += StringFormat(": %s on the breakout or the retest of %s", up ? "buy" : "sell", PS(LineAt(last, t)));
    else if(dir != 0)
@@ -808,6 +827,10 @@ void CheckAlerts(const Signal &s, bool haveSignal)
                              ln.htf ? tfH : tfE, up ? "up" : "down", PS(LineAt(ln, t))));
         }
      }
+   for(int i = 0; i < ArraySize(FB); i++)
+      if(FB[i].back == t)
+         Notify(StringFormat("FAKE BREAK - %s at %s: price came back, the %s are trapped", FakeLabel(FB[i]), PS(FB[i].level),
+                             FB[i].side == 1 ? "sellers" : "buyers"));
    if(lastDirection != 99 && direction != lastDirection)
       Notify(StringFormat("TREND CHANGE - %s trend is now %s", NH > 0 ? tfH : tfE, BiasName(direction)));
    lastDirection = direction;
@@ -853,6 +876,14 @@ void Panel(const Signal &s, bool haveSignal, string status)
    if(Triangle()) pats += (pats == "" ? "" : ",  ") + "triangle";
    if(candleName != "") pats += (pats == "" ? "" : ",  ") + candleName + " candle";
    if(pats != "") PanelRow("PATTERNS", pats + (C.patterns ? "" : "  -  shown only"), ink);
+
+   if(ArraySize(FB) > 0 && t - FB[0].back < 2 * FAKE_BARS)
+     {
+      int ago = t - FB[0].back;
+      PanelRow("FAKE BREAK", StringFormat("%s at %s %s: the %s were trapped, do not chase it", FakeLabel(FB[0]), PS(FB[0].level),
+                                          ago == 0 ? "on this candle" : StringFormat("%d candle%s ago", ago, ago == 1 ? "" : "s"),
+                                          FB[0].side == 1 ? "sellers" : "buyers"), C'230,140,20');
+     }
 
    string brk = LastBreak(t, dir, tfE, tfH);
    if(brk != "") PanelRow("BREAK", brk, StringFind(brk, "up") >= 0 ? up : dn);

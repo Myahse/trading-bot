@@ -38,6 +38,8 @@ It runs inside MT5 on a chart and places the trades itself.
      (red: down through a rising one) on the candle that closed through. On a breakout setup the
      broken line is drawn thick, labelled **TRENDLINE BREAK**, with the ENTER HERE arrow
    - the nearest order blocks
+   - fake breaks: an orange **FAKE BREAK ▲/▼** and a cross where price closed back through a level it had
+     just broken (within 3 candles)
    - chart patterns (double bottom/top, head and shoulders and its inverse): their swings joined, the
      neckline dashed, the name; and the candlestick pattern's name under/over the last candle
    - swing labels (HH / HL / LH / LL)
@@ -53,6 +55,7 @@ It runs inside MT5 on a chart and places the trades itself.
    - **PRICE:** the price and the nearest support and resistance
    - **LEVELS:** trendlines and order blocks
    - **PATTERNS:** the chart patterns, a triangle, the candlestick pattern ("shown only" on Scalp)
+   - **FAKE BREAK:** which level faked, where, and which side is trapped ("do not chase it")
    - **BREAK** (after a trendline break): which line broke, where, how many candles ago, and whether to
      buy/sell on the breakout or the retest, or that it goes against the trend
    - **SETUP:** the live setup, the one waiting for its confirmation, or none
@@ -69,6 +72,7 @@ It runs inside MT5 on a chart and places the trades itself.
 
 **Alerts** (inputs *Alerts*): a pop-up with sound, and a push notification to your phone, when
 - a trendline breaks (`BREAK UP` / `BREAK DOWN`, with the line and price)
+- a break turns out fake (`FAKE BREAK - ... the buyers are trapped`)
 - the trend changes (`TREND CHANGE - H1 trend is now down`)
 - a setup forms (`ENTER HERE - BUY STOP ..., SL ..., TP ...`)
 

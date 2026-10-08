@@ -36,10 +36,11 @@ def test_ea_sees_the_same_market_as_python(parity):
     assert len(merged) == 2500
     # Higher-timeframe trendlines may differ on a few candles: Python sizes their minimum length and
     # retest window from the average chart candles per HTF candle over the whole download, the EA
-    # from the candles seen so far.
-    exact = stats.drop(index="n_htf_lines")
+    # from the candles seen so far. Fake breaks of those lines follow them.
+    near = ["n_htf_lines", "n_fakes", "fake_side", "fake_level"]
+    exact = stats.drop(index=near)
     assert exact["agree"].eq(1.0).all(), exact[exact["agree"] < 1]
-    assert stats.loc["n_htf_lines", "agree"] >= 0.99
+    assert (stats.loc[near, "agree"] >= 0.99).all(), stats.loc[near]
 
 
 def test_ea_takes_the_same_setups_as_python(parity):

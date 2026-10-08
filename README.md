@@ -268,6 +268,7 @@ folder set to `trading-bot`: weekly on Sunday, and daily Sunday to Thursday.
   zone ..., a rejection there, then a move to ... The plan fails on a close below ...*) and the alternative
 - the order block closest to price on each side
 - trendline breaks: **BREAK ▲** (up) / **BREAK ▼** (down) on the candle that closed through
+- fake breaks: **FAKE BREAK ▲/▼** (orange) where price came back through the level
 - the trades
 - for a setup:
   - the zone it came off, filled strong and labelled **ENTRY ZONE** with its edges (the other zones fade)
@@ -342,6 +343,27 @@ GBPUSD 0.00015.
 | swing | GBPJPY | 46 / 15% / 0.42 / -21.5% | 25 / 28% / 0.76 / -3.2% |
 | swing | USDJPY | 41 / 20% / 0.58 / -13.8% | 26 / 23% / 0.52 / -9.1% |
 | swing | GBPUSD | 38 / 29% / 0.86 / -3.7% | 32 / 31% / 0.58 / -8.7% |
+
+### Fake breaks (October 2026)
+
+A **fake break** is price closing through a level, then closing back on the other side within 3
+candles (`tradebot/fakebreak.py`). It is detected on trendlines, pattern necklines and zones (a
+sweep below support or above resistance that comes back). The traders who followed the break are
+trapped.
+
+- **Shown everywhere:** an orange **FAKE BREAK ▲/▼** with a cross where price came back, a line from
+  the break, a FAKE BREAK row in the EA panel, a step in the screenshots, and an EA alert. The BREAK
+  row says "it came back: fake break, not a breakout".
+- **Entries:** unchanged. Two ways of trading on them were tested on the same candles (return summed
+  over 4 markets; R over both modes, 1st / 2nd half):
+
+| Fake breaks used as | Scalp | Swing | R halves |
+|---|---|---|---|
+| **shown only (default)** | **-3.3%** | **+15.3%** | **+4.7 / +3.8** |
+| avoid: no setup in the trapped direction for 3 candles, no retest of a fake-broken line | -5.3% | +14.4% | -1.0 / +4.6 |
+| trade: the candle that came back counts as a level, stop beyond the fake's extreme | -6.1% | +13.6% | +0.9 / +0.3 |
+
+  Both are available in the Python bot for testing (`fake_breaks="avoid"` or `"trade"`).
 
 ### What improved it (October 2026)
 

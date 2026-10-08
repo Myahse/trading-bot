@@ -41,6 +41,8 @@ enum ETrail   { TRAIL_NONE = 0,     // No trailing stop
 #define HEAD_ATR            0.5
 #define PAT_BREAK_ATR       0.1
 #define PAT_FAIL_ATR        0.3
+#define FAKE_BARS           3
+#define FAKE_BREAK_ATR      0.1
 
 //--- data types
 struct Config
@@ -68,6 +70,10 @@ struct Signal { int side; string setup; double entry; double stop; double target
 struct CPattern { string kind; int side; int np; int pi[5]; double pp[5]; int n1; double p1; int n2; double p2;
                   int complete; int broken; double invalid; double height; };
 
+// A fake break (port of tradebot/fakebreak.py): through a level and back within FAKE_BARS candles.
+// side = direction of the trap: +1 when price faked down and came back up.
+struct FBreak { string what; int side; double level; int broke; int back; double extreme; };
+
 // A zone the bot could trade from, with the plan if price came back to it (port of tradebot/zoneplan.py)
 struct ZPlan  { double lo; double hi; int side; bool htf; bool backed; double entry; double stop; double target;
                 double rr; bool tradable; string why; };
@@ -86,7 +92,8 @@ Zone     ZS[], ZR[], HZS[], HZR[];                                            //
 Line     L[];   Line LH[];
 OBlock   OB[];
 int      biasE = 0, biasH = 0, direction = 0;
-CPattern PAT[];                                                               // chart patterns alive now
+CPattern PAT[];
+FBreak   FB[];                                                                // fake breaks, most recent first                                                               // chart patterns alive now
 string   candleName = "";  int candleSide = 0;                                // candlestick pattern on the last candle
 int      gHistoryBars = 5000, gHTFHistoryBars = 1000;                         // candles analysed
 
@@ -532,11 +539,12 @@ bool Analyse(int shift = 1)
          NH = 0;
      }
    direction = (NH > 0) ? biasH : biasE;
-   candleName = ""; candleSide = 0; ArrayResize(PAT, 0);
+   candleName = ""; candleSide = 0; ArrayResize(PAT, 0); ArrayResize(FB, 0);
    if(Valid(A[t]))
      {
       CandlePattern(t);
       FindChartPatterns(t);
+      FindFakeBreaks(t);
      }
    return Valid(A[t]);
   }
@@ -667,6 +675,98 @@ void FindChartPatterns(int t)
            }
         }
      }
+  }
+
+
+//+------------------------------------------------------------------+
+//| Fake breaks (port of tradebot/fakebreak.py)                      |
+//+------------------------------------------------------------------+
+// First candle after the break at b, within FAKE_BARS, that closes back on the trap side (-1 if none).
+// The level is a line (ln), a neckline (pat) or a flat price (flat).
+int FakeBack(int b, int t, int side, int src, const Line &ln, const CPattern &pt, double flat)
+  {
+   for(int j = b + 1; j <= MathMin(b + FAKE_BARS, t); j++)
+     {
+      double a = A[j];
+      if(!Valid(a)) continue;
+      double v = (src == 0) ? LineAt(ln, j) : (src == 1 ? PatNeck(pt, j) : flat);
+      if(side == 1 ? R[j].close > v + FAKE_BREAK_ATR * a : R[j].close < v - FAKE_BREAK_ATR * a) return j;
+     }
+   return -1;
+  }
+
+void AddFake(string what, int side, double level, int b, int j)
+  {
+   double ext = (side == 1) ? R[b].low : R[b].high;
+   for(int i = b; i <= j; i++) ext = (side == 1) ? MathMin(ext, R[i].low) : MathMax(ext, R[i].high);
+   FBreak f;
+   f.what = what; f.side = side; f.level = level; f.broke = b; f.back = j; f.extreme = ext;
+   int k = ArraySize(FB);
+   ArrayResize(FB, k + 1);
+   FB[k] = f;
+  }
+
+void FakeZones(const Zone &z[], bool htf, int t)
+  {
+   for(int k = 0; k < ArraySize(z); k++)
+      for(int side = 1; side >= -1; side -= 2)
+        {
+         double edge = (side == 1) ? z[k].lo : z[k].hi;
+         for(int i = MathMax(1, t - 2 * FAKE_BARS); i <= t; i++)
+           {
+            double a = A[i];
+            if(!Valid(a)) continue;
+            bool beyond = (side == 1) ? R[i].close < edge - FAKE_BREAK_ATR * a : R[i].close > edge + FAKE_BREAK_ATR * a;
+            bool cameFrom = (side == 1) ? R[i - 1].close >= edge : R[i - 1].close <= edge;
+            if(!(beyond && cameFrom)) continue;
+            Line nl; CPattern np;
+            nl.i1 = 0; nl.p1 = 0; nl.i2 = 1; nl.p2 = 0; nl.kind = 0; nl.broken = -1; nl.touches = 0; nl.lastTouch = -1; nl.htf = false;
+            int j = FakeBack(i, t, side, 2, nl, np, edge);
+            if(j >= 0 && t - j < FAKE_BARS)
+               AddFake(StringFormat("%s%s zone", htf ? "HTF " : "", side == 1 ? "support" : "resistance"), side, edge, i, j);
+            break;
+           }
+        }
+  }
+
+// The fake breaks up to t: every one on a live trendline or neckline, and zone sweeps that came back
+// within the last FAKE_BARS candles. Most recent first.
+void FindFakeBreaks(int t)
+  {
+   ArrayResize(FB, 0);
+   CPattern np;
+   for(int k = 0; k < 2; k++)
+     {
+      int cnt = (k == 0) ? ArraySize(L) : ArraySize(LH);
+      for(int i = 0; i < cnt; i++)
+        {
+         Line ln;
+         if(k == 0) ln = L[i]; else ln = LH[i];
+         if(ln.broken < 0 || ln.broken >= t) continue;
+         int side = (ln.kind == 1) ? 1 : -1;            // a rising line broken down, then back up: long
+         int j = FakeBack(ln.broken, t, side, 0, ln, np, 0);
+         if(j >= 0)
+            AddFake(StringFormat("%s%s trendline", ln.htf ? "HTF " : "", ln.kind == 1 ? "rising" : "falling"), side, LineAt(ln, j), ln.broken, j);
+        }
+     }
+   Line nl;
+   nl.i1 = 0; nl.p1 = 0; nl.i2 = 1; nl.p2 = 0; nl.kind = 0; nl.broken = -1; nl.touches = 0; nl.lastTouch = -1; nl.htf = false;
+   for(int i = 0; i < ArraySize(PAT); i++)
+     {
+      if(PAT[i].broken < 0 || PAT[i].broken >= t) continue;
+      int side = -PAT[i].side;                         // a bullish neckline broken up, then back down: short
+      int j = FakeBack(PAT[i].broken, t, side, 1, nl, PAT[i], 0);
+      if(j >= 0) AddFake(PAT[i].kind + " neckline", side, PatNeck(PAT[i], j), PAT[i].broken, j);
+     }
+   FakeZones(ZS, false, t); FakeZones(ZR, false, t); FakeZones(HZS, true, t); FakeZones(HZR, true, t);
+   for(int i = 1; i < ArraySize(FB); i++)                // stable sort, most recent return first
+      for(int j = i; j > 0 && FB[j].back > FB[j - 1].back; j--)
+        { FBreak x = FB[j]; FB[j] = FB[j - 1]; FB[j - 1] = x; }
+  }
+
+string FakeLabel(const FBreak &f)
+  {
+   return StringFormat("fake break %s %s", f.side == 1 ? "below" : "above", f.what);
   }
 
 // A rising and a falling entry-chart trendline, both intact: price is coiling into a triangle.

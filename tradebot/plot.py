@@ -17,6 +17,7 @@ from .zoneplan import plan_zones, scenarios, shown_plans
 
 UP, DOWN, LINE, HTF = "#2a9d8f", "#e76f51", "#264653", "#6d597a"
 INK, MUTED, SURFACE = "#0b0b0b", "#52514e", "#fcfcfb"
+FAKE = "#e68c14"   # fake breaks
 
 
 def swing_labels(pivots: list[Pivot]) -> list[tuple[Pivot, str]]:
@@ -162,6 +163,14 @@ def draw_entry(ax, market: Market, an: Analysis, last: int = 300, result: Backte
                     (xs[len(xs) // 2], top), xytext=(0, 14 if pat.side == "short" else -14), textcoords="offset points",
                     ha="center", va="bottom" if pat.side == "short" else "top", fontsize=8, fontweight="bold",
                     color=colour, zorder=7)
+    for fb in an.fake_breaks:      # where price came back through the level: the break failed
+        if fb.back_at < start:
+            continue
+        ax.plot([fb.broke_at, fb.back_at], [fb.level, fb.level], color=FAKE, linewidth=2, zorder=6)
+        ax.scatter(fb.back_at, fb.level, marker="X", s=70, color=FAKE, zorder=7)
+        ax.annotate("FAKE BREAK " + ("\u25b2" if fb.side == "long" else "\u25bc"), (fb.back_at, fb.level),
+                    xytext=(6, -10 if fb.side == "long" else 10), textcoords="offset points", ha="left",
+                    va="top" if fb.side == "long" else "bottom", fontsize=9, fontweight="bold", color=FAKE, zorder=7)
     if an.candle:
         name, side = an.candle
         y = market.l[an.bar] if side == "long" else market.h[an.bar]
