@@ -495,7 +495,7 @@ void Draw(const Signal &s, bool haveSignal)
    for(int i = 0; i < ArraySize(plans); i++)
      {
       ZPlan p = plans[i];
-      if(C.zoneBest && i != best) continue;
+      if(C.zoneBest ? i != best : !PlanShown(plans, i, R[t].close, A[t])) continue;
       if(show && ((p.lo == shown.zoneLo && p.hi == shown.zoneHi) || (p.lo == shown.htfLo && p.hi == shown.htfHi))) continue;
       string nm = PFX + "pz" + IntegerToString(i);
       if(!p.tradable)
@@ -602,55 +602,104 @@ void Draw(const Signal &s, bool haveSignal)
    ChartRedraw(0);
   }
 
-// Splits text into lines of at most `width` characters, at spaces.
-int Wrap(string text, int width, string &out[])
+// Panel rows are collected first, then measured with the chart's own font metrics and drawn, so the
+// box fits its text whatever the fonts and screen scaling.
+string   pnHead[], pnText[];
+color    pnColor[];
+bool     pnBold[];
+
+void PanelRow(string head, string text, color clr, bool bold = false)
+  {
+   int k = ArraySize(pnHead);
+   ArrayResize(pnHead, k + 1); ArrayResize(pnText, k + 1); ArrayResize(pnColor, k + 1); ArrayResize(pnBold, k + 1);
+   pnHead[k] = head; pnText[k] = text; pnColor[k] = clr; pnBold[k] = bold;
+  }
+
+int TextWidth(string text, bool bold, int &height)
+  {
+   TextSetFont(bold ? "Arial Bold" : "Arial", bold ? -100 : -80);
+   uint w = 0, h = 0;
+   TextGetSize(text, w, h);
+   height = (int)h;
+   return (int)w;
+  }
+
+// Splits text into lines no wider than maxPx (and at most 60 characters: MT5 shows 63 per label).
+int WrapPx(string text, int maxPx, bool bold, string &out[])
   {
    ArrayResize(out, 0);
    string words[];
-   int nw = StringSplit(text, ' ', words), n = 0;
+   int nw = StringSplit(text, ' ', words), n = 0, h;
    string line = "";
    for(int i = 0; i < nw; i++)
      {
-      if(line != "" && StringLen(line) + 1 + StringLen(words[i]) > width)
-        { ArrayResize(out, n + 1); out[n++] = line; line = ""; }
-      line += (line == "" ? "" : " ") + words[i];
+      if(words[i] == "") continue;
+      string next = line == "" ? words[i] : line + " " + words[i];
+      if(line != "" && (TextWidth(next, bold, h) > maxPx || StringLen(next) > 60))
+        { ArrayResize(out, n + 1); out[n++] = line; next = words[i]; }
+      line = next;
      }
    if(line != "") { ArrayResize(out, n + 1); out[n++] = line; }
    return n;
   }
 
-// One row of the panel: a short heading and its text, wrapped, in a colour.
-void PanelRow(int &y, string head, string text, color clr, bool bold = false)
+void PanelLabel(string name, int x, int y, string text, color clr, bool bold)
   {
-   string lines[];
-   int n = Wrap(text, 58, lines);              // MT5 shows at most 63 characters per label
-   for(int i = 0; i < n; i++)
+   ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+   ObjectSetString(0, name, OBJPROP_TEXT, text);
+   ObjectSetString(0, name, OBJPROP_FONT, bold ? "Arial Bold" : "Arial");
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, bold ? 10 : 8);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+  }
+
+void PanelDraw()
+  {
+   int pad = 10, gap = 12, textMax = 400, h = 0;
+   int headW = 0;
+   for(int r = 0; r < ArraySize(pnHead); r++)
+      if(pnHead[r] != "") headW = MathMax(headW, TextWidth(pnHead[r], false, h) + 4);
+   int widest = 0, y;
+   // first pass: measure
+   int total = 0;
+   for(int r = 0; r < ArraySize(pnHead); r++)
      {
-      string nm = PFX + "pn" + IntegerToString(y);
-      if(i == 0 && head != "")
-        {
-         ObjectCreate(0, nm + "h", OBJ_LABEL, 0, 0, 0);
-         ObjectSetInteger(0, nm + "h", OBJPROP_CORNER, CORNER_LEFT_UPPER);
-         ObjectSetInteger(0, nm + "h", OBJPROP_XDISTANCE, 16);
-         ObjectSetInteger(0, nm + "h", OBJPROP_YDISTANCE, y);
-         ObjectSetString(0, nm + "h", OBJPROP_TEXT, head);
-         ObjectSetString(0, nm + "h", OBJPROP_FONT, "Arial Bold");
-         ObjectSetInteger(0, nm + "h", OBJPROP_FONTSIZE, 8);
-         ObjectSetInteger(0, nm + "h", OBJPROP_COLOR, clrDimGray);
-         ObjectSetInteger(0, nm + "h", OBJPROP_SELECTABLE, false);
-        }
-      ObjectCreate(0, nm, OBJ_LABEL, 0, 0, 0);
-      ObjectSetInteger(0, nm, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-      ObjectSetInteger(0, nm, OBJPROP_XDISTANCE, head == "" ? 16 : 100);
-      ObjectSetInteger(0, nm, OBJPROP_YDISTANCE, y);
-      ObjectSetString(0, nm, OBJPROP_TEXT, lines[i]);
-      ObjectSetString(0, nm, OBJPROP_FONT, bold ? "Arial Bold" : "Arial");
-      ObjectSetInteger(0, nm, OBJPROP_FONTSIZE, bold ? 10 : 8);
-      ObjectSetInteger(0, nm, OBJPROP_COLOR, clr);
-      ObjectSetInteger(0, nm, OBJPROP_SELECTABLE, false);
-      y += bold ? 20 : 15;
+      string ls[];
+      int n = WrapPx(pnText[r], pnHead[r] == "" ? textMax + headW + gap : textMax, pnBold[r], ls);
+      int lh = 0;
+      for(int i = 0; i < n; i++) widest = MathMax(widest, TextWidth(ls[i], pnBold[r], lh) + (pnHead[r] == "" ? 0 : headW + gap));
+      total += n * (lh + 3) + 4;
      }
-   y += 3;
+   string bg = PFX + "pnbg";                      // the white box first, so the text sits on top
+   ObjectCreate(0, bg, OBJ_RECTANGLE_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, bg, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, bg, OBJPROP_XDISTANCE, 6);
+   ObjectSetInteger(0, bg, OBJPROP_YDISTANCE, 12);
+   ObjectSetInteger(0, bg, OBJPROP_XSIZE, widest + 2 * pad + 4);
+   ObjectSetInteger(0, bg, OBJPROP_YSIZE, total + 2 * pad);
+   ObjectSetInteger(0, bg, OBJPROP_BGCOLOR, clrWhite);
+   ObjectSetInteger(0, bg, OBJPROP_BORDER_TYPE, BORDER_FLAT);
+   ObjectSetInteger(0, bg, OBJPROP_COLOR, C'200,200,200');
+   ObjectSetInteger(0, bg, OBJPROP_BACK, false);
+   ObjectSetInteger(0, bg, OBJPROP_SELECTABLE, false);
+   y = 12 + pad;
+   for(int r = 0; r < ArraySize(pnHead); r++)
+     {
+      string ls[];
+      int n = WrapPx(pnText[r], pnHead[r] == "" ? textMax + headW + gap : textMax, pnBold[r], ls), lh = 0;
+      TextWidth("Ag", pnBold[r], lh);
+      if(pnHead[r] != "") PanelLabel(PFX + "pnh" + IntegerToString(r), 6 + pad, y, pnHead[r], clrDimGray, false);
+      for(int i = 0; i < n; i++)
+        {
+         PanelLabel(PFX + "pn" + IntegerToString(r) + "_" + IntegerToString(i), 6 + pad + (pnHead[r] == "" ? 0 : headW + gap), y,
+                    ls[i], pnColor[r], pnBold[r]);
+         y += lh + 3;
+        }
+      y += 4;
+     }
   }
 
 // The analysis panel, top left on a white box: trend, where price is, the setup, the zones and
@@ -662,66 +711,59 @@ void Panel(const Signal &s, bool haveSignal, string status)
    int t = N - 1;
    color up = C'42,157,143', dn = C'231,111,81', ink = C'38,70,83';
    string tfE = StringSubstr(EnumToString(Period()), 7), tfH = StringSubstr(EnumToString(C.htf), 7);
-   // a white box behind the text, so the chart never shows through; created first so the text sits on top
-   string bg = PFX + "pnbg";
-   ObjectCreate(0, bg, OBJ_RECTANGLE_LABEL, 0, 0, 0);
-   ObjectSetInteger(0, bg, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-   ObjectSetInteger(0, bg, OBJPROP_XDISTANCE, 6);
-   ObjectSetInteger(0, bg, OBJPROP_YDISTANCE, 12);
-   ObjectSetInteger(0, bg, OBJPROP_XSIZE, 470);
-   ObjectSetInteger(0, bg, OBJPROP_YSIZE, 300);
-   ObjectSetInteger(0, bg, OBJPROP_BGCOLOR, clrWhite);
-   ObjectSetInteger(0, bg, OBJPROP_BORDER_TYPE, BORDER_FLAT);
-   ObjectSetInteger(0, bg, OBJPROP_COLOR, C'200,200,200');
-   ObjectSetInteger(0, bg, OBJPROP_BACK, false);
-   ObjectSetInteger(0, bg, OBJPROP_SELECTABLE, false);
-   int y = 18;
-   PanelRow(y, "", "TradeBot  " + _Symbol + " " + tfE + (C.zoneBest ? "  (Swing)" : "  (Scalp)"), ink, true);
+   ArrayResize(pnHead, 0); ArrayResize(pnText, 0); ArrayResize(pnColor, 0); ArrayResize(pnBold, 0);
+   PanelRow("", "TradeBot  " + _Symbol + " " + tfE + (C.zoneBest ? "  (Swing)" : "  (Scalp)"), ink, true);
 
    int dir = (NH > 0) ? biasH : biasE;
    string trend = (NH > 0 ? tfH + " " + BiasName(biasH) : "") + (NH > 0 ? ",  " : "") + tfE + " " + BiasName(biasE);
-   PanelRow(y, "TREND", trend + (dir == 1 ? "  -  buys only" : (dir == -1 ? "  -  sells only" : "  -  no direction")),
+   PanelRow("TREND", trend + (dir == 1 ? "  -  buys only" : (dir == -1 ? "  -  sells only" : "  -  no direction")),
             dir == 1 ? up : (dir == -1 ? dn : ink));
 
    string loc = "";
    if(ArraySize(ZR) > 0) loc += StringFormat("resistance %s-%s (%.1f ATR above)", PS(ZR[0].lo), PS(ZR[0].hi), (ZR[0].lo - R[t].close) / A[t]);
-   if(ArraySize(ZS) > 0) loc += (loc == "" ? "" : ",  ") + StringFormat("support %s-%s (%.1f ATR below)", PS(ZS[0].lo), PS(ZS[0].hi), (R[t].close - ZS[0].hi) / A[t]);
-   PanelRow(y, "PRICE", PS(R[t].close) + "  -  " + (loc == "" ? "no zone nearby" : loc), ink);
+   if(ArraySize(ZS) > 0)
+     {
+      double below = (R[t].close - ZS[0].hi) / A[t];
+      loc += (loc == "" ? "" : ",  ") + (below <= 0.05 ? StringFormat("inside support %s-%s", PS(ZS[0].lo), PS(ZS[0].hi))
+                                                       : StringFormat("support %s-%s (%.1f ATR below)", PS(ZS[0].lo), PS(ZS[0].hi), below));
+     }
+   PanelRow("PRICE", PS(R[t].close) + "  -  " + (loc == "" ? "no zone nearby" : loc), ink);
 
    int obs = 0;
    for(int i = 0; i < ArraySize(OB); i++) if(OBActive(OB[i], t)) obs++;
-   PanelRow(y, "LEVELS", StringFormat("%d trendlines on %s, %d on %s,  %d order blocks", ArraySize(L), tfE, ArraySize(LH), tfH, obs), ink);
+   PanelRow("LEVELS", StringFormat("%d trendlines on %s, %d on %s,  %d order blocks", ArraySize(L), tfE, ArraySize(LH), tfH, obs), ink);
 
    if(haveSignal)
-      PanelRow(y, "SETUP", StringFormat("%s %s:  %s STOP %s,  SL %s,  TP %s,  R:R %.1f", s.side == 1 ? "BUY" : "SELL", s.setup,
+      PanelRow("SETUP", StringFormat("%s %s:  %s STOP %s,  SL %s,  TP %s,  R:R %.1f", s.side == 1 ? "BUY" : "SELL", s.setup,
                                         s.side == 1 ? "BUY" : "SELL", PS(s.trigger > 0 ? s.trigger : s.entry), PS(s.stop), PS(s.target), s.rr),
                s.side == 1 ? up : dn);
    else if(armed)
-      PanelRow(y, "SETUP", StringFormat("waiting: %s STOP %s, %d candles left", armedSig.side == 1 ? "BUY" : "SELL",
+      PanelRow("SETUP", StringFormat("waiting: %s STOP %s, %d candles left", armedSig.side == 1 ? "BUY" : "SELL",
                                         PS(armedSig.trigger), armedBarsLeft), armedSig.side == 1 ? up : dn);
    else
-      PanelRow(y, "SETUP", "none yet - wait for a rejection candle in a tradable zone", ink);
+      PanelRow("SETUP", "none yet - wait for a rejection candle in a tradable zone", ink);
 
    ZPlan plans[];
    PlanZones(plans);
    int best = BestPlan(plans), nt = 0;
    for(int i = 0; i < ArraySize(plans); i++) if(plans[i].tradable) nt++;
    if(best < 0)
-      PanelRow(y, "ZONES", "no zone near price goes with the trend and pays enough", ink);
+      PanelRow("ZONES", "no zone near price goes with the trend and pays enough", ink);
    else
      {
       ZPlan b = plans[best];
       string text = StringFormat("%s,  SL %s,  TP %s,  R:R %.1f", PlanLabel(b), PS(b.stop), PS(b.target), b.rr);
-      PanelRow(y, C.zoneBest ? "ENTRY ZONE" : StringFormat("ZONES (%d)", nt), (C.zoneBest ? "" : "best: ") + text, b.side == 1 ? up : dn);
+      PanelRow(C.zoneBest ? "ENTRY ZONE" : "ZONES", (C.zoneBest ? "" : StringFormat("%d tradable%s, best: ", nt, nt > 3 ? " (nearest 3 drawn)" : "")) + text,
+               b.side == 1 ? up : dn);
      }
 
    string mainS, altS;
    Scenarios(plans, NH > 0 ? tfH : tfE, mainS, altS);
-   PanelRow(y, "MAIN", mainS, ink);
-   PanelRow(y, "ALTERNATIVE", altS, clrDimGray);
-   PanelRow(y, "STATUS", status + (lastNote != "" ? "  -  " + lastNote : ""), clrDimGray);
+   PanelRow("MAIN", mainS, ink);
+   PanelRow("ALTERNATIVE", altS, clrDimGray);
+   PanelRow("STATUS", status + (lastNote != "" ? "  -  " + lastNote : ""), clrDimGray);
 
-   ObjectSetInteger(0, PFX + "pnbg", OBJPROP_YSIZE, y - 8);   // the box ends below the last row
+   PanelDraw();
    ChartRedraw(0);
   }
 

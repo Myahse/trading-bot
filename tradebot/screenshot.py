@@ -194,8 +194,10 @@ def analysis_steps(market: Market, an: Analysis, entry_tf: str, htf_tf: str,
                       f"stop {px(best.stop)}, target {px(best.target)}, R:R {best.rr:.1f}. Wait for a rejection "
                       "candle there." if best else "No zone near price goes with the trend and pays enough."))
     else:
-        steps.append((OK if tradable else NO, f"Tradable zones: {len(tradable)}",
-                      "; ".join(f"{p.label} (R:R {p.rr:.1f})" for p in tradable[:4]) + "." if tradable else
+        near = sorted(tradable, key=lambda p: abs(an.price - p.entry))[:3]
+        steps.append((OK if tradable else NO, f"Tradable zones: {len(tradable)}"
+                      + (f" (nearest {len(near)} on the chart)" if len(tradable) > len(near) else ""),
+                      "; ".join(f"{p.label} (R:R {p.rr:.1f})" for p in near) + "." if tradable else
                       "No zone near price goes with the trend and pays enough."))
     main, alt = scenarios(an, plans, htf_tf)
     steps.append((DOT, "Main scenario", main))

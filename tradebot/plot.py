@@ -13,7 +13,7 @@ import numpy as np
 from .backtest import BacktestResult
 from .strategy import Analysis, Market
 from .structure import Pivot, px
-from .zoneplan import best_plan, plan_zones, scenarios
+from .zoneplan import plan_zones, scenarios, shown_plans
 
 UP, DOWN, LINE, HTF = "#2a9d8f", "#e76f51", "#264653", "#6d597a"
 INK, MUTED, SURFACE = "#0b0b0b", "#52514e", "#fcfcfb"
@@ -75,9 +75,7 @@ def draw_entry(ax, market: Market, an: Analysis, last: int = 300, result: Backte
     s = an.signal
     if s is not None:   # make sure the whole trade plan is on screen
         lo, hi = min(lo, s.stop, s.target), max(hi, s.stop, s.target)
-    plans = plan_zones(market, an)
-    if market.cfg.zone_view == "best":
-        plans = [p for p in [best_plan(plans)] if p is not None]
+    plans = shown_plans(plan_zones(market, an), market.cfg.zone_view, an.price, an.atr)
     for p in plans:     # and every zone it could trade from
         if p.tradable:
             lo, hi = min(lo, p.zone.low), max(hi, p.zone.high)
@@ -85,7 +83,7 @@ def draw_entry(ax, market: Market, an: Analysis, last: int = 300, result: Backte
             lo, hi = min(lo, p.stop, p.target), max(hi, p.stop, p.target)
     pad = (hi - lo) * 0.05
 
-    # Zones: every one the bot could trade from with its plan (scalp), or only the best one (swing).
+    # Zones: the tradable ones nearest to price with their plans (scalp), or only the best one (swing).
     # With a setup on, the zone it came off is the one that matters: drawn strong, the others faded.
     used = s.zone if s is not None else None
     htf_used = s.htf_zone if s is not None else None

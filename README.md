@@ -256,7 +256,7 @@ folder set to `trading-bot`: weekly on Sunday, and daily Sunday to Thursday.
 
 `--plot chart.png` draws only what matters at the latest bar:
 - **the zones it could trade from**, each with its plan (`BUY ZONE 4,134.20-4,136.20  TP 4,146.50  R:R 2.8`):
-  - scalp: every tradable zone
+  - scalp: the 3 tradable zones nearest to price (zones far away are not actionable yet)
   - swing: only the best entry zone, with its SL and TP
   - a zone is tradable when it goes with the higher-timeframe trend and pays the minimum R:R.
     `+ HTF` means it sits on a higher-timeframe zone (the best is the nearest such zone).

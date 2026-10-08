@@ -811,6 +811,18 @@ int BestPlan(const ZPlan &plans[])
    return -1;
   }
 
+// Whether a chart draws plan i: one of the `limit` tradable zones nearest to price, or an untradable
+// one within fadedATR ATRs (port of zoneplan.shown_plans for the "all" view).
+bool PlanShown(const ZPlan &plans[], int i, double price, double atr, int limit = 3, double fadedATR = 2.0)
+  {
+   if(!plans[i].tradable) return MathAbs(price - plans[i].entry) <= fadedATR * atr;
+   int nearer = 0;
+   double d = MathAbs(price - plans[i].entry);
+   for(int j = 0; j < ArraySize(plans); j++)
+      if(j != i && plans[j].tradable && (MathAbs(price - plans[j].entry) < d || (MathAbs(price - plans[j].entry) == d && j < i))) nearer++;
+   return nearer < limit;
+  }
+
 string PlanLabel(const ZPlan &p)
   {
    return StringFormat("%s ZONE%s %s-%s", p.side == 1 ? "BUY" : "SELL", p.htf ? " (HTF)" : (p.backed ? " + HTF" : ""), PS(p.lo), PS(p.hi));
