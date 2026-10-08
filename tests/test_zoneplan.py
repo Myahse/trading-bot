@@ -66,9 +66,44 @@ def test_swing_shows_the_best_zone_scalp_every_one():
 
 
 def test_charts_show_the_nearest_tradable_zones_only(market):
-    from tradebot.zoneplan import shown_plans
+    from tradebot.zoneplan import same_place, shown_plans
     for an, plans in _views(market):
         shown = shown_plans(plans, "all", an.price, an.atr)
-        tradable = sorted((p for p in plans if p.tradable), key=lambda p: abs(an.price - p.entry))
-        assert shown == [p for p in plans if p in tradable[:2]]
+        expect = []
+        for p in sorted((p for p in plans if p.tradable), key=lambda p: abs(an.price - p.entry)):
+            if len(expect) < 2 and not any(same_place(p.zone, q.zone, an.atr) for q in expect):
+                expect.append(p)
+        assert shown == [p for p in plans if p in expect]
         assert shown_plans(plans, "best", an.price, an.atr) == ([best_plan(plans)] if best_plan(plans) else [])
+
+
+def test_stacked_zones_are_shown_as_one_place():
+    from tradebot.structure import Zone
+    from tradebot.zoneplan import ZonePlan, shown_plans
+
+    def plan(lo, hi):
+        return ZonePlan(Zone(lo, hi, 2), "short", False, True, lo, hi + 0.5, lo - 3, True, "")
+    a, b, c = plan(101.0, 101.3), plan(101.35, 101.6), plan(103.0, 103.3)   # a and b touch: one place
+    assert shown_plans([a, b, c], "all", price=100.0, atr=1.0) == [a, c]
+    assert shown_plans([a, c], "all", price=100.0, atr=1.0) == [a, c]
+
+
+@pytest.mark.parametrize("mode", ["scalp", "swing"])
+def test_every_candle_shows_few_distinct_zones(mode):
+    """Replays the bot candle by candle: a chart never draws two zones at the same place, never
+    more than 2 (scalp) or 1 (swing), and only zones it would trade."""
+    from tradebot.zoneplan import SAME_PLACE_ATR, shown_plans
+    m = Market(data.synthetic(2500, seed=21), mode_config(mode, htf=12))
+    limit = 2 if mode == "scalp" else 1
+    drawn = 0
+    for t in range(300, len(m.c)):
+        an = m.analyze(t)
+        if an.atr != an.atr:
+            continue
+        shown = shown_plans(plan_zones(m, an), m.cfg.zone_view, an.price, an.atr)
+        drawn += len(shown)
+        assert len(shown) <= limit and all(p.tradable for p in shown)
+        for i, p in enumerate(shown):
+            for q in shown[i + 1:]:
+                assert max(p.zone.low, q.zone.low) - min(p.zone.high, q.zone.high) >= SAME_PLACE_ATR * an.atr
+    assert drawn > 500

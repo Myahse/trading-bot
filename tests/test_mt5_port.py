@@ -18,6 +18,7 @@ from tradebot.orderblocks import find_order_blocks
 from tradebot.parity import EXACT, PRICES, compare, python_rows, read_candles, read_mt5, signal_overlap
 from tradebot.strategy import MODES, StrategyConfig, mode_config
 from tradebot.structure import TrendlineFinder, atr
+from tradebot.zoneplan import SAME_PLACE_ATR
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests" / "data" / "mt5_parity_GBPUSD_M5.csv.gz"
@@ -125,6 +126,7 @@ def test_ea_fixed_rules_match_python_defaults():
         "BREAKOUT_BODY": cfg.breakout_body, "OB_LOOKBACK": find_order_blocks.__defaults__[-1], "LINE_CANDIDATES": finder["candidates"],
         "LINE_TOUCH_ATR": finder["touch_atr"], "LINE_WICK_ATR": finder["wick_atr"],
         "LINE_BREAK_ATR": finder["break_atr"], "LINE_MAX_SLOPE_ATR": finder["max_slope_atr"],
+        "SAME_PLACE_ATR": SAME_PLACE_ATR,
     }
     for name, want in pairs.items():
         assert float(defines[name]) == pytest.approx(want), name

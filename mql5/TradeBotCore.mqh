@@ -42,6 +42,7 @@ enum ETrail   { TRAIL_NONE = 0,     // No trailing stop
 #define PAT_BREAK_ATR       0.1
 #define PAT_FAIL_ATR        0.3
 #define FAKE_BARS           3
+#define SAME_PLACE_ATR      0.5     // zones closer than this many ATRs are drawn as one place (PlanShown)
 #define FAKE_BREAK_ATR      0.1
 
 //--- data types
@@ -1094,16 +1095,33 @@ int BestPlan(const ZPlan &plans[])
    return -1;
   }
 
-// Whether a chart draws plan i: one of the `limit` tradable zones nearest to price
-// (port of zoneplan.shown_plans for the "all" view).
+// Whether a chart draws plan i: one of the `limit` tradable zones nearest to price, each at a
+// different place (port of zoneplan.shown_plans for the "all" view): a zone closer than
+// SAME_PLACE_ATR to one already shown is the same place and is skipped.
 bool PlanShown(const ZPlan &plans[], int i, double price, double atr, int limit = 2)
   {
-   if(!plans[i].tradable) return false;
-   int nearer = 0;
-   double d = MathAbs(price - plans[i].entry);
-   for(int j = 0; j < ArraySize(plans); j++)
-      if(j != i && plans[j].tradable && (MathAbs(price - plans[j].entry) < d || (MathAbs(price - plans[j].entry) == d && j < i))) nearer++;
-   return nearer < limit;
+   int n = ArraySize(plans), shown[];
+   bool used[];
+   ArrayResize(shown, 0);
+   ArrayResize(used, n);
+   ArrayInitialize(used, false);
+   while(ArraySize(shown) < limit)
+     {
+      int k = -1;
+      for(int j = 0; j < n; j++)                    // the nearest tradable plan not looked at yet
+         if(plans[j].tradable && !used[j] && (k < 0 || MathAbs(price - plans[j].entry) < MathAbs(price - plans[k].entry))) k = j;
+      if(k < 0) break;
+      used[k] = true;
+      bool same = false;
+      for(int q = 0; q < ArraySize(shown); q++)
+         if(MathMax(plans[k].lo, plans[shown[q]].lo) - MathMin(plans[k].hi, plans[shown[q]].hi) < SAME_PLACE_ATR * atr) same = true;
+      if(same) continue;
+      if(k == i) return true;
+      int m = ArraySize(shown);
+      ArrayResize(shown, m + 1);
+      shown[m] = k;
+     }
+   return false;
   }
 
 string PlanLabel(const ZPlan &p)

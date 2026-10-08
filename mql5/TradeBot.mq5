@@ -597,6 +597,10 @@ void Draw(const Signal &s, bool haveSignal)
      {
       if(FB[i].back < N - 200) continue;
       if(!InpFullDetail && i != FakeWarning((NH > 0) ? biasH : biasE)) continue;   // clean view: only the warning
+      bool dup = false;                                    // a line and a zone at the same price: one fake break
+      for(int j = 0; j < i; j++)
+         if(FB[j].back == FB[i].back && FB[j].side == FB[i].side && MathAbs(FB[j].level - FB[i].level) < 0.25 * A[t]) dup = true;
+      if(dup) continue;
       color fc = C'230,140,20';
       string nm = PFX + "fake" + IntegerToString(i);
       Segment(nm + "l", R[FB[i].broke].time, FB[i].level, R[FB[i].back].time, FB[i].level, fc, 2, STYLE_SOLID, false);

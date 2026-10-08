@@ -262,7 +262,8 @@ folder set to `trading-bot`: weekly on Sunday, and daily Sunday to Thursday.
 side, a fake break against the trend,
 and the main scenario as the title. Add `--detail` for the full analysis below. The full chart draws:
 - **the zones it could trade from**, each with its plan (`BUY ZONE 4,134.20-4,136.20  TP 4,146.50  R:R 2.8`):
-  - scalp: the 2 tradable zones nearest to price (zones far away are not actionable yet)
+  - scalp: the 2 tradable zones nearest to price (zones far away are not actionable yet), at two
+    different places: a zone within 0.5 ATR of one already shown is the same place and is skipped
   - swing: only the best entry zone, with its SL and TP
   - a zone is tradable when it goes with the higher-timeframe trend and pays the minimum R:R.
     `+ HTF` means it sits on a higher-timeframe zone (the best is the nearest such zone).
@@ -271,7 +272,8 @@ and the main scenario as the title. Add `--detail` for the full analysis below. 
   zone ..., a rejection there, then a move to ... The plan fails on a close below ...*) and the alternative
 - the order block closest to price on each side
 - trendline breaks: **BREAK ▲** (up) / **BREAK ▼** (down) on the candle that closed through
-- fake breaks: **FAKE BREAK ▲/▼** (orange) where price came back through the level
+- fake breaks: **FAKE BREAK ▲/▼** (orange) where price came back through the level, once each (a
+  trendline and a zone at the same price that fail on the same candle are one fake break)
 - the trades
 - for a setup:
   - the zone it came off, filled strong and labelled **ENTRY ZONE** with its edges (the other zones fade)

@@ -90,3 +90,20 @@ def fake_breaks(h, l, c, atr, t: int, trendlines, patterns, zones, bars: int = 3
                     out.append(FakeBreak(name, side, float(edge), i, j, ext))
                 break
     return sorted(out, key=lambda f: -f.back_at)
+
+
+def distinct(fakes: list[FakeBreak], atr: float) -> list[FakeBreak]:
+    """The fake breaks once each: a trendline and a zone at the same price, failed on the same
+    candle, are one fake break (the first listed is kept)."""
+    out: list[FakeBreak] = []
+    for fb in fakes:
+        if not any(fb.back_at == g.back_at and fb.side == g.side and abs(fb.level - g.level) < 0.25 * atr for g in out):
+            out.append(fb)
+    return out
+
+
+def warning(fakes: list[FakeBreak], t: int, direction: str | None, bars: int = 3) -> FakeBreak | None:
+    """The one fake break worth a warning at t: the most recent within 2 x `bars` candles that
+    trapped the trade direction's side (any side when there is no trend)."""
+    favoured = {"up": "long", "down": "short"}.get(direction or "", "")
+    return next((fb for fb in fakes if t - fb.back_at < 2 * bars and fb.side != favoured), None)

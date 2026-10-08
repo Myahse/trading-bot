@@ -11,6 +11,7 @@ from __future__ import annotations
 import numpy as np
 
 from .backtest import BacktestResult
+from .fakebreak import distinct, warning
 from .strategy import Analysis, Market
 from .structure import Pivot, px
 from .zoneplan import plan_zones, scenarios, shown_plans
@@ -168,11 +169,10 @@ def draw_entry(ax, market: Market, an: Analysis, last: int = 300, result: Backte
                     (xs[len(xs) // 2], top), xytext=(0, 14 if pat.side == "short" else -14), textcoords="offset points",
                     ha="center", va="bottom" if pat.side == "short" else "top", fontsize=8, fontweight="bold",
                     color=colour, zorder=7)
-    for fb in an.fake_breaks:      # where price came back through the level: the break failed
-        warns = an.bar - fb.back_at < 2 * market.cfg.fake_bars and fb.side != {"up": "long", "down": "short"}.get(
-            an.direction, "")
-        if fb.back_at < start or not (detail or warns):
-            continue                       # clean view: only a fresh fake break against the trend
+    warn = warning(an.fake_breaks, an.bar, an.direction, market.cfg.fake_bars)
+    for fb in distinct(an.fake_breaks, an.atr):   # where price came back through the level: the break failed
+        if fb.back_at < start or not (detail or fb is warn):
+            continue                       # clean view: only the one fresh fake break against the trend
         ax.plot([fb.broke_at, fb.back_at], [fb.level, fb.level], color=FAKE, linewidth=2, zorder=6)
         ax.scatter(fb.back_at, fb.level, marker="X", s=70, color=FAKE, zorder=7)
         ax.annotate("FAKE BREAK " + ("\u25b2" if fb.side == "long" else "\u25bc"), (fb.back_at, fb.level),

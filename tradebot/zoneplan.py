@@ -7,7 +7,7 @@ A zone is *tradable* when that plan goes with the higher-timeframe trend and pay
 minimum reward:risk. Zones on the higher timeframe that overlap an entry-chart zone are merged
 into it and make it *HTF-backed*, the strongest kind.
 
-Scalp charts show the 2 tradable zones nearest to price; swing charts the single best one (`zone_view`).
+Scalp charts show the 2 tradable zones nearest to price, at two different places; swing charts the single best one (`zone_view`).
 These are plans to wait for, not orders: an entry still needs the rejection candle and its
 confirmation.
 """
@@ -18,6 +18,8 @@ from dataclasses import dataclass
 
 from .strategy import Analysis, Market
 from .structure import Zone, px
+
+SAME_PLACE_ATR = 0.5     # zones closer than this many ATRs are drawn as one place (shown_plans)
 
 
 @dataclass(frozen=True)
@@ -90,12 +92,21 @@ def _target(an: Analysis, side: str, entry: float, stop: float, t: int, default_
     return max(obstacles) if obstacles else entry - default_rr * (stop - entry)
 
 
+def same_place(a: Zone, b: Zone, atr: float) -> bool:
+    """Two zones closer than SAME_PLACE_ATR: on a chart they are one place to trade from."""
+    return max(a.low, b.low) - min(a.high, b.high) < SAME_PLACE_ATR * atr
+
+
 def shown_plans(plans: list[ZonePlan], view: str, price: float, atr: float, limit: int = 2) -> list[ZonePlan]:
     """The plans a chart draws: the best one ("best"), or the `limit` tradable zones nearest to
-    price ("all"). Zones it would not trade, and far ones, are left off: they are not actionable."""
+    price ("all"), each at a different place: a zone next to one already shown is the same place
+    and is skipped. Zones it would not trade, and far ones, are left off: they are not actionable."""
     if view == "best":
         return [p for p in [best_plan(plans)] if p is not None]
-    near = sorted((p for p in plans if p.tradable), key=lambda p: abs(price - p.entry))[:limit]
+    near: list[ZonePlan] = []
+    for p in sorted((p for p in plans if p.tradable), key=lambda p: abs(price - p.entry)):
+        if len(near) < limit and not any(same_place(p.zone, q.zone, atr) for q in near):
+            near.append(p)
     return [p for p in plans if p in near]
 
 
