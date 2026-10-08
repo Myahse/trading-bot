@@ -62,6 +62,10 @@ input bool     InpDraw            = true;           // Draw zones, trendlines, o
 input bool     InpPanel           = true;           // Show the analysis panel
 input bool     InpScreenshots     = true;           // Save a screenshot for every trade (MQL5/Files)
 
+input group "Alerts"
+input bool     InpAlertPopup      = true;           // Pop-up and sound: trendline break, trend change, new setup
+input bool     InpAlertPush       = true;           // Push to your phone too (MT5 app: set your MetaQuotes ID in Options)
+
 //--- EA state
 CTrade   trade;
 datetime lastBar = 0;
@@ -524,24 +528,35 @@ void Draw(const Signal &s, bool haveSignal)
       Text(PFX + "ehzT", zoneLabelAt, shown.htfLo, "ENTRY ZONE (HTF) " + PS(shown.htfLo) + "-" + PS(shown.htfHi), htf, ANCHOR_LEFT_UPPER, 8, "Arial Bold");
      }
 
-   for(int i = 0; i < ArraySize(L); i++)
+   for(int k = 0; k < 2; k++)                               // trendlines: entry chart, then HTF (on the chart's candles too)
      {
-      string nm = PFX + "l" + IntegerToString(i);
-      if(L[i].broken < 0)
-         Segment(nm, R[L[i].i1].time, L[i].p1, R[L[i].i2].time, L[i].p2, ink, 2, STYLE_SOLID, true);
-      else
+      int cnt = (k == 0) ? ArraySize(L) : ArraySize(LH);
+      for(int i = 0; i < cnt; i++)
         {
-         Segment(nm, R[L[i].i1].time, L[i].p1, R[L[i].broken].time, LineAt(L[i], L[i].broken), ink, 2, STYLE_SOLID, false);
-         Segment(nm + "x", R[L[i].broken].time, LineAt(L[i], L[i].broken), right, LineAt(L[i], t + 12), ink, 1, STYLE_DOT, false);
+         Line ln;
+         if(k == 0) ln = L[i]; else ln = LH[i];
+         string nm = PFX + (k == 0 ? "l" : "lh") + IntegerToString(i);
+         color clr = (k == 0) ? ink : htf;
+         int width = (k == 0) ? 2 : 3;
+         bool breakout = show && shown.setup == "breakout" && ln.broken == t && ln.kind == -shown.side;
+         if(ln.broken < 0)
+           { Segment(nm, R[ln.i1].time, ln.p1, R[ln.i2].time, ln.p2, clr, width, STYLE_SOLID, true); continue; }
+         double at = LineAt(ln, ln.broken);
+         Segment(nm, R[ln.i1].time, ln.p1, R[ln.broken].time, at, clr, breakout ? width + 2 : width, STYLE_SOLID, false);
+         Segment(nm + "x", R[ln.broken].time, at, right, LineAt(ln, t + 12), clr, 1, STYLE_DOT, false);
+         // the break: where a candle closed through the line, green when price broke up, red when down
+         bool up = ln.kind == -1;
+         color bc = up ? C'42,157,143' : C'231,111,81';
+         string mk = nm + "brk";
+         ObjectCreate(0, mk, OBJ_ARROW, 0, R[ln.broken].time, at);
+         ObjectSetInteger(0, mk, OBJPROP_ARROWCODE, 159);  // dot
+         ObjectSetInteger(0, mk, OBJPROP_COLOR, bc);
+         ObjectSetInteger(0, mk, OBJPROP_WIDTH, 4);
+         ObjectSetInteger(0, mk, OBJPROP_ANCHOR, ANCHOR_CENTER);
+         ObjectSetInteger(0, mk, OBJPROP_SELECTABLE, false);
+         Text(mk + "T", R[ln.broken].time, at, (breakout ? "TRENDLINE BREAK " : "BREAK ") + (up ? "\x25B2" : "\x25BC"), bc,
+              up ? ANCHOR_RIGHT_UPPER : ANCHOR_RIGHT_LOWER, breakout ? 9 : 8, "Arial Bold");
         }
-     }
-   for(int i = 0; i < ArraySize(LH); i++)                  // HTF lines sit on the chart's candles too
-     {
-      string nm = PFX + "lh" + IntegerToString(i);
-      if(LH[i].broken < 0)
-         Segment(nm, R[LH[i].i1].time, LH[i].p1, R[LH[i].i2].time, LH[i].p2, htf, 3, STYLE_SOLID, true);
-      else
-         Segment(nm, R[LH[i].i1].time, LH[i].p1, R[LH[i].broken].time, LineAt(LH[i], LH[i].broken), htf, 3, STYLE_SOLID, false);
      }
 
    for(int kind = -1; kind <= 1; kind += 2)                // nearest active order block on each side
@@ -695,6 +710,76 @@ void PanelDraw()
      }
   }
 
+// The most recent trendline break still in its retest window, in words ("" if none).
+string LastBreak(int t, int dir, string tfE, string tfH)
+  {
+   int when = -1;
+   Line last;
+   last.i1 = 0; last.p1 = 0; last.i2 = 1; last.p2 = 0; last.kind = 0; last.broken = -1;
+   last.touches = 0; last.lastTouch = -1; last.htf = false;
+   for(int k = 0; k < 2; k++)
+     {
+      int cnt = (k == 0) ? ArraySize(L) : ArraySize(LH);
+      for(int i = 0; i < cnt; i++)
+        {
+         Line ln;
+         if(k == 0) ln = L[i]; else ln = LH[i];
+         if(ln.broken < 0 || ln.broken <= when) continue;
+         when = ln.broken; last = ln;
+        }
+     }
+   if(when < 0) return "";
+   bool up = last.kind == -1;                     // a falling line broken upward, or a rising one downward
+   bool isHtf = last.htf;
+   int ago = t - when;
+   string text = StringFormat("%s %s trendline broken %s at %s %s", up ? "falling" : "rising", isHtf ? tfH : tfE, up ? "up" : "down",
+                              PS(LineAt(last, when)), ago == 0 ? "on this candle" : StringFormat("%d candle%s ago", ago, ago == 1 ? "" : "s"));
+   if(dir == (up ? 1 : -1))
+      text += StringFormat(": %s on the breakout or the retest of %s", up ? "buy" : "sell", PS(LineAt(last, t)));
+   else if(dir != 0)
+      text += ": against the " + tfH + " trend, no trade";
+   return text;
+  }
+
+// Alerts: a pop-up with sound and a push to the phone, once per event.
+datetime lastAlertBar = 0;
+int      lastDirection = 99;
+
+void Notify(string msg)
+  {
+   if(MQLInfoInteger(MQL_TESTER)) return;
+   string full = StringFormat("TradeBot %s %s: %s", _Symbol, StringSubstr(EnumToString(Period()), 7), msg);
+   if(InpAlertPopup) Alert(full);
+   if(InpAlertPush && TerminalInfoInteger(TERMINAL_NOTIFICATIONS_ENABLED)) SendNotification(full);
+  }
+
+void CheckAlerts(const Signal &s, bool haveSignal)
+  {
+   int t = N - 1;
+   if(R[t].time == lastAlertBar) return;
+   lastAlertBar = R[t].time;
+   string tfE = StringSubstr(EnumToString(Period()), 7), tfH = StringSubstr(EnumToString(C.htf), 7);
+   for(int k = 0; k < 2; k++)
+     {
+      int cnt = (k == 0) ? ArraySize(L) : ArraySize(LH);
+      for(int i = 0; i < cnt; i++)
+        {
+         Line ln;
+         if(k == 0) ln = L[i]; else ln = LH[i];
+         if(ln.broken != t) continue;
+         bool up = ln.kind == -1;
+         Notify(StringFormat("BREAK %s - %s %s trendline broken %s at %s", up ? "UP" : "DOWN", up ? "falling" : "rising",
+                             ln.htf ? tfH : tfE, up ? "up" : "down", PS(LineAt(ln, t))));
+        }
+     }
+   if(lastDirection != 99 && direction != lastDirection)
+      Notify(StringFormat("TREND CHANGE - %s trend is now %s", NH > 0 ? tfH : tfE, BiasName(direction)));
+   lastDirection = direction;
+   if(haveSignal)
+      Notify(StringFormat("ENTER HERE - %s STOP %s, SL %s, TP %s, R:R %.1f (%s)", s.side == 1 ? "BUY" : "SELL",
+                          PS(s.trigger > 0 ? s.trigger : s.entry), PS(s.stop), PS(s.target), s.rr, s.setup));
+  }
+
 // The analysis panel, top left on a white box: trend, where price is, the setup, the zones and
 // the two scenarios. Green is for buying, red for selling.
 void Panel(const Signal &s, bool haveSignal, string status)
@@ -725,6 +810,9 @@ void Panel(const Signal &s, bool haveSignal, string status)
    int obs = 0;
    for(int i = 0; i < ArraySize(OB); i++) if(OBActive(OB[i], t)) obs++;
    PanelRow("LEVELS", StringFormat("%d trendlines on %s, %d on %s,  %d order blocks", ArraySize(L), tfE, ArraySize(LH), tfH, obs), ink);
+
+   string brk = LastBreak(t, dir, tfE, tfH);
+   if(brk != "") PanelRow("BREAK", brk, StringFind(brk, "up") >= 0 ? up : dn);
 
    if(haveSignal)
       PanelRow("SETUP", StringFormat("%s %s:  %s STOP %s,  SL %s,  TP %s,  R:R %.1f", s.side == 1 ? "BUY" : "SELL", s.setup,
@@ -803,6 +891,7 @@ void OnTick()
    Signal s;
    ClearSignal(s);
    bool haveSignal = Setup(1, s) || Setup(-1, s);
+   CheckAlerts(s, haveSignal);
 
    if(tradingPermitted)
      {

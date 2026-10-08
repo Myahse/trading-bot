@@ -264,6 +264,7 @@ folder set to `trading-bot`: weekly on Sunday, and daily Sunday to Thursday.
 - **two scenarios** in the title: the main one (e.g. *H1 uptrend: expect a pullback into the buy
   zone ..., a rejection there, then a move to ... The plan fails on a close below ...*) and the alternative
 - the order block closest to price on each side
+- trendline breaks: **BREAK ▲** (up) / **BREAK ▼** (down) on the candle that closed through
 - the trades
 - for a setup:
   - the zone it came off, filled strong and labelled **ENTRY ZONE** with its edges (the other zones fade)

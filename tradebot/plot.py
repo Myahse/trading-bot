@@ -129,6 +129,13 @@ def draw_entry(ax, market: Market, an: Analysis, last: int = 300, result: Backte
             ax.plot(xs, [line.value_at(i) for i in xs], color=colour, linewidth=width * 0.7,
                     linestyle=(0, (2, 3)), zorder=4)
             ax.scatter(line.broken_at, line.value_at(line.broken_at), marker="D", s=36, color=colour, zorder=5)
+            # the break: green when price broke up through a falling line, red when down through a rising one
+            up = line.kind == "resistance"
+            breakout = s is not None and s.setup == "breakout" and line.broken_at == an.bar
+            ax.annotate(("TRENDLINE BREAK " if breakout else "BREAK ") + ("\u25b2" if up else "\u25bc"),
+                        (line.broken_at, line.value_at(line.broken_at)), xytext=(-6, 8 if up else -8),
+                        textcoords="offset points", ha="right", va="bottom" if up else "top",
+                        fontsize=9 if breakout else 8, fontweight="bold", color=UP if up else DOWN, zorder=7)
         state = "" if line.broken_at is None else " broken"
         labels.add(line.value_at(xs[-1]), f"{'HTF ' if line.htf else ''}TL x{len(line.touches)}{state}", colour)
 

@@ -34,6 +34,9 @@ It runs inside MT5 on a chart and places the trades itself.
      thicker outline means the zone sits on a higher-timeframe zone (`+ HTF`). Zones it would not
      trade (against the higher-timeframe trend, or too little R:R) are not drawn
    - trendlines: thick purple for the higher timeframe, dotted after a break
+   - every break: a dot and **BREAK ▲** (green: price broke up through a falling line) or **BREAK ▼**
+     (red: down through a rising one) on the candle that closed through. On a breakout setup the
+     broken line is drawn thick, labelled **TRENDLINE BREAK**, with the ENTER HERE arrow
    - the nearest order blocks
    - swing labels (HH / HL / LH / LL)
    - for a setup, the entry, SL and TP lines. A setup waiting for its confirmation stays on the chart
@@ -47,6 +50,8 @@ It runs inside MT5 on a chart and places the trades itself.
    - **TREND:** both timeframes, and whether it is buys only, sells only or no direction
    - **PRICE:** the price and the nearest support and resistance
    - **LEVELS:** trendlines and order blocks
+   - **BREAK** (after a trendline break): which line broke, where, how many candles ago, and whether to
+     buy/sell on the breakout or the retest, or that it goes against the trend
    - **SETUP:** the live setup, the one waiting for its confirmation, or none
    - **ZONES** (Scalp: how many are tradable, and the best) or **ENTRY ZONE** (Swing), with SL, TP and R:R
    - **MAIN** and **ALTERNATIVE:** the two scenarios
@@ -58,6 +63,15 @@ It runs inside MT5 on a chart and places the trades itself.
    - **Alternative:** what happens if that level breaks, and the next zone to watch.
 
    These are levels to watch, not orders: an entry still needs the rejection candle and its confirmation.
+
+**Alerts** (inputs *Alerts*): a pop-up with sound, and a push notification to your phone, when
+- a trendline breaks (`BREAK UP` / `BREAK DOWN`, with the line and price)
+- the trend changes (`TREND CHANGE - H1 trend is now down`)
+- a setup forms (`ENTER HERE - BUY STOP ..., SL ..., TP ...`)
+
+For the phone: install the MetaTrader 5 app, copy its MetaQuotes ID (Settings > Chats and messages),
+then in the desktop MT5 go to **Tools > Options > Notifications**, tick *Enable Push notifications*
+and paste the ID. Alerts are off in the Strategy Tester.
 
 On a **real** account it only analyses and never sends an order, unless you set *Allow trading a
 REAL account* to `true`. Keep it on demo until weeks of results justify more.
