@@ -42,8 +42,17 @@ It runs inside MT5 on a chart and places the trades itself.
        higher-timeframe zone, if one was tagged too), and the other zones fade
      - an arrow on the next candle points at the order level, labelled **ENTER HERE: BUY STOP**
        (or SELL STOP) and the price
-5. The top-left panel shows how the bot reads the market, step by step, and what it is waiting for:
-   the trend on both timeframes, the tradable zones (or the entry zone on Swing), and two scenarios:
+5. The panel at the top left (a white box, green for buying, red for selling) shows how the bot reads
+   the market and what it is waiting for, one row each:
+   - **TREND:** both timeframes, and whether it is buys only, sells only or no direction
+   - **PRICE:** the price and the nearest support and resistance
+   - **LEVELS:** trendlines and order blocks
+   - **SETUP:** the live setup, the one waiting for its confirmation, or none
+   - **ZONES** (Scalp: how many are tradable, and the best) or **ENTRY ZONE** (Swing), with SL, TP and R:R
+   - **MAIN** and **ALTERNATIVE:** the two scenarios
+   - **STATUS:** trading, in a trade, limits reached, ...
+
+   The scenarios read like this:
    - **Main:** e.g. *H1 uptrend: expect a pullback into the buy zone 4129.93-4132.90, a rejection
      there, then a move to 4146.50. The plan fails on a close below 4128.79.*
    - **Alternative:** what happens if that level breaks, and the next zone to watch.

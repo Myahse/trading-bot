@@ -602,42 +602,127 @@ void Draw(const Signal &s, bool haveSignal)
    ChartRedraw(0);
   }
 
+// Splits text into lines of at most `width` characters, at spaces.
+int Wrap(string text, int width, string &out[])
+  {
+   ArrayResize(out, 0);
+   string words[];
+   int nw = StringSplit(text, ' ', words), n = 0;
+   string line = "";
+   for(int i = 0; i < nw; i++)
+     {
+      if(line != "" && StringLen(line) + 1 + StringLen(words[i]) > width)
+        { ArrayResize(out, n + 1); out[n++] = line; line = ""; }
+      line += (line == "" ? "" : " ") + words[i];
+     }
+   if(line != "") { ArrayResize(out, n + 1); out[n++] = line; }
+   return n;
+  }
+
+// One row of the panel: a short heading and its text, wrapped, in a colour.
+void PanelRow(int &y, string head, string text, color clr, bool bold = false)
+  {
+   string lines[];
+   int n = Wrap(text, 58, lines);              // MT5 shows at most 63 characters per label
+   for(int i = 0; i < n; i++)
+     {
+      string nm = PFX + "pn" + IntegerToString(y);
+      if(i == 0 && head != "")
+        {
+         ObjectCreate(0, nm + "h", OBJ_LABEL, 0, 0, 0);
+         ObjectSetInteger(0, nm + "h", OBJPROP_CORNER, CORNER_LEFT_UPPER);
+         ObjectSetInteger(0, nm + "h", OBJPROP_XDISTANCE, 16);
+         ObjectSetInteger(0, nm + "h", OBJPROP_YDISTANCE, y);
+         ObjectSetString(0, nm + "h", OBJPROP_TEXT, head);
+         ObjectSetString(0, nm + "h", OBJPROP_FONT, "Arial Bold");
+         ObjectSetInteger(0, nm + "h", OBJPROP_FONTSIZE, 8);
+         ObjectSetInteger(0, nm + "h", OBJPROP_COLOR, clrDimGray);
+         ObjectSetInteger(0, nm + "h", OBJPROP_SELECTABLE, false);
+        }
+      ObjectCreate(0, nm, OBJ_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, nm, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+      ObjectSetInteger(0, nm, OBJPROP_XDISTANCE, head == "" ? 16 : 100);
+      ObjectSetInteger(0, nm, OBJPROP_YDISTANCE, y);
+      ObjectSetString(0, nm, OBJPROP_TEXT, lines[i]);
+      ObjectSetString(0, nm, OBJPROP_FONT, bold ? "Arial Bold" : "Arial");
+      ObjectSetInteger(0, nm, OBJPROP_FONTSIZE, bold ? 10 : 8);
+      ObjectSetInteger(0, nm, OBJPROP_COLOR, clr);
+      ObjectSetInteger(0, nm, OBJPROP_SELECTABLE, false);
+      y += bold ? 20 : 15;
+     }
+   y += 3;
+  }
+
+// The analysis panel, top left on a white box: trend, where price is, the setup, the zones and
+// the two scenarios. Green is for buying, red for selling.
 void Panel(const Signal &s, bool haveSignal, string status)
   {
-   if(!InpPanel) { Comment(""); return; }
+   Comment("");
+   if(!InpPanel) return;
    int t = N - 1;
-   string txt = "TradeBot - how it reads " + _Symbol + "\n";
-   if(NH > 0) txt += StringFormat("1. Trend (%s): %s\n", EnumToString(C.htf), BiasName(biasH));
-   txt += StringFormat("2. Structure (%s): %s\n", EnumToString(Period()), BiasName(biasE));
+   color up = C'42,157,143', dn = C'231,111,81', ink = C'38,70,83';
+   string tfE = StringSubstr(EnumToString(Period()), 7), tfH = StringSubstr(EnumToString(C.htf), 7);
+   // a white box behind the text, so the chart never shows through; created first so the text sits on top
+   string bg = PFX + "pnbg";
+   ObjectCreate(0, bg, OBJ_RECTANGLE_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, bg, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, bg, OBJPROP_XDISTANCE, 6);
+   ObjectSetInteger(0, bg, OBJPROP_YDISTANCE, 12);
+   ObjectSetInteger(0, bg, OBJPROP_XSIZE, 470);
+   ObjectSetInteger(0, bg, OBJPROP_YSIZE, 300);
+   ObjectSetInteger(0, bg, OBJPROP_BGCOLOR, clrWhite);
+   ObjectSetInteger(0, bg, OBJPROP_BORDER_TYPE, BORDER_FLAT);
+   ObjectSetInteger(0, bg, OBJPROP_COLOR, C'200,200,200');
+   ObjectSetInteger(0, bg, OBJPROP_BACK, false);
+   ObjectSetInteger(0, bg, OBJPROP_SELECTABLE, false);
+   int y = 18;
+   PanelRow(y, "", "TradeBot  " + _Symbol + " " + tfE + (C.zoneBest ? "  (Swing)" : "  (Scalp)"), ink, true);
+
+   int dir = (NH > 0) ? biasH : biasE;
+   string trend = (NH > 0 ? tfH + " " + BiasName(biasH) : "") + (NH > 0 ? ",  " : "") + tfE + " " + BiasName(biasE);
+   PanelRow(y, "TREND", trend + (dir == 1 ? "  -  buys only" : (dir == -1 ? "  -  sells only" : "  -  no direction")),
+            dir == 1 ? up : (dir == -1 ? dn : ink));
+
    string loc = "";
    if(ArraySize(ZR) > 0) loc += StringFormat("resistance %s-%s (%.1f ATR above)", PS(ZR[0].lo), PS(ZR[0].hi), (ZR[0].lo - R[t].close) / A[t]);
-   if(ArraySize(ZS) > 0) loc += (loc == "" ? "" : ", ") + StringFormat("support %s-%s (%.1f ATR below)", PS(ZS[0].lo), PS(ZS[0].hi), (R[t].close - ZS[0].hi) / A[t]);
-   txt += "3. Levels: " + (loc == "" ? "none nearby" : loc) + "\n";
-   txt += StringFormat("4. Trendlines: %d on %s, %d on %s\n", ArraySize(L), EnumToString(Period()), ArraySize(LH), EnumToString(C.htf));
+   if(ArraySize(ZS) > 0) loc += (loc == "" ? "" : ",  ") + StringFormat("support %s-%s (%.1f ATR below)", PS(ZS[0].lo), PS(ZS[0].hi), (R[t].close - ZS[0].hi) / A[t]);
+   PanelRow(y, "PRICE", PS(R[t].close) + "  -  " + (loc == "" ? "no zone nearby" : loc), ink);
+
    int obs = 0;
    for(int i = 0; i < ArraySize(OB); i++) if(OBActive(OB[i], t)) obs++;
-   txt += StringFormat("5. Order blocks active: %d\n", obs);
+   PanelRow(y, "LEVELS", StringFormat("%d trendlines on %s, %d on %s,  %d order blocks", ArraySize(L), tfE, ArraySize(LH), tfH, obs), ink);
+
    if(haveSignal)
-      txt += StringFormat("6. SETUP %s (%s): entry %s, SL %s, TP %s, R:R %.1f\n   %s\n", s.side == 1 ? "LONG" : "SHORT",
-                          s.setup, PS(s.trigger > 0 ? s.trigger : s.entry), PS(s.stop), PS(s.target), s.rr, s.reasons);
+      PanelRow(y, "SETUP", StringFormat("%s %s:  %s STOP %s,  SL %s,  TP %s,  R:R %.1f", s.side == 1 ? "BUY" : "SELL", s.setup,
+                                        s.side == 1 ? "BUY" : "SELL", PS(s.trigger > 0 ? s.trigger : s.entry), PS(s.stop), PS(s.target), s.rr),
+               s.side == 1 ? up : dn);
    else if(armed)
-      txt += StringFormat("6. Waiting for confirmation at %s (%d candles left)\n", PS(armedSig.trigger), armedBarsLeft);
+      PanelRow(y, "SETUP", StringFormat("waiting: %s STOP %s, %d candles left", armedSig.side == 1 ? "BUY" : "SELL",
+                                        PS(armedSig.trigger), armedBarsLeft), armedSig.side == 1 ? up : dn);
    else
-      txt += "6. Setup: none\n";
+      PanelRow(y, "SETUP", "none yet - wait for a rejection candle in a tradable zone", ink);
+
    ZPlan plans[];
    PlanZones(plans);
    int best = BestPlan(plans), nt = 0;
    for(int i = 0; i < ArraySize(plans); i++) if(plans[i].tradable) nt++;
-   if(C.zoneBest)
-      txt += "7. Entry zone: " + (best >= 0 ? StringFormat("%s, SL %s, TP %s, R:R %.1f", PlanLabel(plans[best]), PS(plans[best].stop),
-                                                           PS(plans[best].target), plans[best].rr) : "none near price") + "\n";
+   if(best < 0)
+      PanelRow(y, "ZONES", "no zone near price goes with the trend and pays enough", ink);
    else
-      txt += StringFormat("7. Tradable zones: %d%s\n", nt, best >= 0 ? " (best: " + PlanLabel(plans[best]) + ")" : "");
+     {
+      ZPlan b = plans[best];
+      string text = StringFormat("%s,  SL %s,  TP %s,  R:R %.1f", PlanLabel(b), PS(b.stop), PS(b.target), b.rr);
+      PanelRow(y, C.zoneBest ? "ENTRY ZONE" : StringFormat("ZONES (%d)", nt), (C.zoneBest ? "" : "best: ") + text, b.side == 1 ? up : dn);
+     }
+
    string mainS, altS;
-   Scenarios(plans, NH > 0 ? StringSubstr(EnumToString(C.htf), 7) : StringSubstr(EnumToString(Period()), 7), mainS, altS);
-   txt += "Main: " + mainS + "\nAlternative: " + altS + "\n";
-   txt += "Status: " + status + (lastNote != "" ? "\nLast note: " + lastNote : "");
-   Comment(txt);
+   Scenarios(plans, NH > 0 ? tfH : tfE, mainS, altS);
+   PanelRow(y, "MAIN", mainS, ink);
+   PanelRow(y, "ALTERNATIVE", altS, clrDimGray);
+   PanelRow(y, "STATUS", status + (lastNote != "" ? "  -  " + lastNote : ""), clrDimGray);
+
+   ObjectSetInteger(0, PFX + "pnbg", OBJPROP_YSIZE, y - 8);   // the box ends below the last row
+   ChartRedraw(0);
   }
 
 //+------------------------------------------------------------------+
