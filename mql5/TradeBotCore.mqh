@@ -811,11 +811,11 @@ int BestPlan(const ZPlan &plans[])
    return -1;
   }
 
-// Whether a chart draws plan i: one of the `limit` tradable zones nearest to price, or an untradable
-// one within fadedATR ATRs (port of zoneplan.shown_plans for the "all" view).
-bool PlanShown(const ZPlan &plans[], int i, double price, double atr, int limit = 3, double fadedATR = 2.0)
+// Whether a chart draws plan i: one of the `limit` tradable zones nearest to price
+// (port of zoneplan.shown_plans for the "all" view).
+bool PlanShown(const ZPlan &plans[], int i, double price, double atr, int limit = 2)
   {
-   if(!plans[i].tradable) return MathAbs(price - plans[i].entry) <= fadedATR * atr;
+   if(!plans[i].tradable) return false;
    int nearer = 0;
    double d = MathAbs(price - plans[i].entry);
    for(int j = 0; j < ArraySize(plans); j++)

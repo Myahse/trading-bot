@@ -70,6 +70,5 @@ def test_charts_show_the_nearest_tradable_zones_only(market):
     for an, plans in _views(market):
         shown = shown_plans(plans, "all", an.price, an.atr)
         tradable = sorted((p for p in plans if p.tradable), key=lambda p: abs(an.price - p.entry))
-        assert [p for p in shown if p.tradable] == [p for p in plans if p in tradable[:3]]
-        assert all(abs(an.price - p.entry) <= 2 * an.atr for p in shown if not p.tradable)
+        assert shown == [p for p in plans if p in tradable[:2]]
         assert shown_plans(plans, "best", an.price, an.atr) == ([best_plan(plans)] if best_plan(plans) else [])

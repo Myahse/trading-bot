@@ -92,12 +92,6 @@ def draw_entry(ax, market: Market, an: Analysis, last: int = 300, result: Backte
             continue
         colour = UP if p.side == "long" else DOWN
         width = right - start + 1
-        if not p.tradable:
-            ax.add_patch(Rectangle((start - 1, p.zone.low), width, p.zone.high - p.zone.low, facecolor=colour,
-                                   alpha=0.05, linewidth=0, zorder=1))
-            if not p.why_not.startswith("against"):   # against-trend zones need no label: the title says the trend
-                labels.add(p.zone.mid, f"{px(p.zone.mid)} - {p.why_not}", MUTED)
-            continue
         strong = s is None
         ax.add_patch(Rectangle((start - 1, p.zone.low), width, p.zone.high - p.zone.low, facecolor=colour,
                                alpha=0.22 if strong else 0.08, edgecolor=colour if strong else "none",

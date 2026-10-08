@@ -30,9 +30,9 @@ It runs inside MT5 on a chart and places the trades itself.
    preset and your risk.
 4. The chart shows:
    - the zones it could trade from, each with its plan: `BUY ZONE 4134.20-4136.20  TP 4146.50  R:R 2.7`.
-     Scalp shows the 3 tradable zones nearest to price; Swing shows only the best one, with its SL and TP lines. A
+     Scalp shows the 2 tradable zones nearest to price; Swing shows only the best one, with its SL and TP lines. A
      thicker outline means the zone sits on a higher-timeframe zone (`+ HTF`). Zones it would not
-     trade are faded: against the higher-timeframe trend, or labelled with their too-low R:R
+     trade (against the higher-timeframe trend, or too little R:R) are not drawn
    - trendlines: thick purple for the higher timeframe, dotted after a break
    - the nearest order blocks
    - swing labels (HH / HL / LH / LL)

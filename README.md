@@ -256,11 +256,11 @@ folder set to `trading-bot`: weekly on Sunday, and daily Sunday to Thursday.
 
 `--plot chart.png` draws only what matters at the latest bar:
 - **the zones it could trade from**, each with its plan (`BUY ZONE 4,134.20-4,136.20  TP 4,146.50  R:R 2.8`):
-  - scalp: the 3 tradable zones nearest to price (zones far away are not actionable yet)
+  - scalp: the 2 tradable zones nearest to price (zones far away are not actionable yet)
   - swing: only the best entry zone, with its SL and TP
   - a zone is tradable when it goes with the higher-timeframe trend and pays the minimum R:R.
     `+ HTF` means it sits on a higher-timeframe zone (the best is the nearest such zone).
-  - zones it would not trade are faded; those failing on R:R say so
+  - zones it would not trade (against the trend, or too little R:R) are not drawn
 - **two scenarios** in the title: the main one (e.g. *H1 uptrend: expect a pullback into the buy
   zone ..., a rejection there, then a move to ... The plan fails on a close below ...*) and the alternative
 - the order block closest to price on each side

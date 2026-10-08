@@ -7,7 +7,7 @@ A zone is *tradable* when that plan goes with the higher-timeframe trend and pay
 minimum reward:risk. Zones on the higher timeframe that overlap an entry-chart zone are merged
 into it and make it *HTF-backed*, the strongest kind.
 
-Scalp charts show the tradable zones nearest to price; swing charts the single best one (`zone_view`).
+Scalp charts show the 2 tradable zones nearest to price; swing charts the single best one (`zone_view`).
 These are plans to wait for, not orders: an entry still needs the rejection candle and its
 confirmation.
 """
@@ -90,14 +90,13 @@ def _target(an: Analysis, side: str, entry: float, stop: float, t: int, default_
     return max(obstacles) if obstacles else entry - default_rr * (stop - entry)
 
 
-def shown_plans(plans: list[ZonePlan], view: str, price: float, atr: float, limit: int = 3,
-                faded_atr: float = 2.0) -> list[ZonePlan]:
+def shown_plans(plans: list[ZonePlan], view: str, price: float, atr: float, limit: int = 2) -> list[ZonePlan]:
     """The plans a chart draws: the best one ("best"), or the `limit` tradable zones nearest to
-    price plus the untradable ones within `faded_atr` ATRs ("all") - far zones are not actionable."""
+    price ("all"). Zones it would not trade, and far ones, are left off: they are not actionable."""
     if view == "best":
         return [p for p in [best_plan(plans)] if p is not None]
     near = sorted((p for p in plans if p.tradable), key=lambda p: abs(price - p.entry))[:limit]
-    return [p for p in plans if p in near or (not p.tradable and abs(price - p.entry) <= faded_atr * atr)]
+    return [p for p in plans if p in near]
 
 
 def best_plan(plans: list[ZonePlan]) -> ZonePlan | None:

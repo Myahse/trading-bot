@@ -498,13 +498,6 @@ void Draw(const Signal &s, bool haveSignal)
       if(C.zoneBest ? i != best : !PlanShown(plans, i, R[t].close, A[t])) continue;
       if(show && ((p.lo == shown.zoneLo && p.hi == shown.zoneHi) || (p.lo == shown.htfLo && p.hi == shown.htfHi))) continue;
       string nm = PFX + "pz" + IntegerToString(i);
-      if(!p.tradable)
-        {
-         Rect(nm, left, p.lo, right, p.hi, p.side == 1 ? C'240,247,246' : C'253,243,240', true, 1);
-         if(StringFind(p.why, "against") < 0)       // against-trend zones need no label: the panel says the trend
-            Text(nm + "T", planLabelAt, (p.lo + p.hi) / 2, PS((p.lo + p.hi) / 2) + " - " + p.why, clrGray, ANCHOR_LEFT);
-         continue;
-        }
       color clr = (p.side == 1) ? up : dn;
       Rect(nm, left, p.lo, right, p.hi, show ? (p.side == 1 ? C'230,243,241' : C'252,238,233') : (p.side == 1 ? C'190,226,221' : C'248,208,196'), true, 1);
       if(!show) Rect(nm + "b", left, p.lo, right, p.hi, clr, false, (p.htf || p.backed) ? 2 : 1);
@@ -753,7 +746,7 @@ void Panel(const Signal &s, bool haveSignal, string status)
      {
       ZPlan b = plans[best];
       string text = StringFormat("%s,  SL %s,  TP %s,  R:R %.1f", PlanLabel(b), PS(b.stop), PS(b.target), b.rr);
-      PanelRow(C.zoneBest ? "ENTRY ZONE" : "ZONES", (C.zoneBest ? "" : StringFormat("%d tradable%s, best: ", nt, nt > 3 ? " (nearest 3 drawn)" : "")) + text,
+      PanelRow(C.zoneBest ? "ENTRY ZONE" : "ZONES", (C.zoneBest ? "" : StringFormat("%d tradable%s, best: ", nt, nt > 2 ? " (nearest 2 drawn)" : "")) + text,
                b.side == 1 ? up : dn);
      }
 
