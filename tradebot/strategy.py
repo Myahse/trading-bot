@@ -32,6 +32,7 @@ import pandas as pd
 
 from .fractal import HigherTimeframe
 from .orderblocks import OrderBlock, find_order_blocks
+from .patterns import ChartPattern, candle_pattern, chart_patterns
 from .structure import LevelBook, Pivot, Trendline, TrendlineFinder, Zone, atr, px, find_pivots, market_bias
 
 
@@ -65,6 +66,7 @@ class StrategyConfig:
                                         # "none": enter at the next open
     confirm_bars: int = 3               # bars the confirmation may take before the setup is cancelled
     zone_view: str = "all"              # charts: "all" tradable zones with their plans, or the "best" one
+    patterns: bool = True               # candlestick and chart patterns count as levels (and neckline breaks)
 
 
 MODES: dict[str, dict] = {
@@ -72,7 +74,8 @@ MODES: dict[str, dict] = {
     "scalp": dict(interval="5m", count=20_000, period="60d",
                   config=dict(htf="1h", pivot_left=3, pivot_right=3, htf_pivot=3, zone_lookback_pivots=30,
                               ob_max_age=100, min_rr=1.5, default_rr=1.5, retest_window=12, cooldown_bars=6,
-                              min_stop_atr=1.0, confirmation="break", confirm_bars=3, zone_view="all"),
+                              min_stop_atr=1.0, confirmation="break", confirm_bars=3, zone_view="all",
+                              patterns=False),   # shown, not counted: they made 5m entries worse
                   money=dict(risk_per_trade=0.005, breakeven_r=1.0, partial_r=1.0, partial_pct=0.5,
                              trail="atr", trail_start_r=1.0, trail_atr=1.5, max_daily_loss=0.03,
                              max_trades_per_day=8)),
@@ -80,7 +83,7 @@ MODES: dict[str, dict] = {
     "swing": dict(interval="4h", count=5_000, period="730d",
                   config=dict(htf="D", pivot_left=5, pivot_right=5, htf_pivot=3, zone_lookback_pivots=40,
                               ob_max_age=150, min_rr=2.0, default_rr=2.5, retest_window=15, cooldown_bars=3,
-                              confirmation="break", confirm_bars=2, zone_view="best"),
+                              confirmation="break", confirm_bars=2, zone_view="best", patterns=True),
                   money=dict(risk_per_trade=0.01, breakeven_r=1.0, partial_r=1.5, partial_pct=0.5,
                              trail="swing", trail_start_r=1.5, max_daily_loss=None)),
 }
@@ -128,6 +131,8 @@ class Analysis:
     trendlines: list[Trendline]
     order_blocks: list[OrderBlock]
     signal: Signal | None
+    candle: tuple[str, str] | None = None                       # candlestick pattern on this candle
+    patterns: list[ChartPattern] = field(default_factory=list)  # chart patterns alive at this candle
 
     @property
     def direction(self) -> str:
@@ -188,6 +193,8 @@ class Market:
         an = Analysis(t, float(c), float(a), market_bias(pivots), htf_bias, support, resistance,
                       htf_support, htf_resistance, lines, obs, None)
         if ready:
+            an.candle = candle_pattern(self.o, self.h, self.l, self.c, t)
+            an.patterns = chart_patterns(pivots, self.c, self.atr, t, cfg.ob_max_age, cfg.retest_window)
             an.signal = self._long(t, an) or self._short(t, an)
         return an
 
@@ -220,6 +227,8 @@ class Market:
                    if b.kind == "bullish" and lo <= b.high + buf and c > b.low), None)
         if ob:
             tags.append((f"bullish order block {px(ob.low)}-{px(ob.high)}", ob.low))
+        if cfg.patterns:
+            tags += self._pattern_tags("long", t, an, buf)
 
         if len(tags) >= cfg.min_confluence:
             stop = min([lo] + [lvl for _, lvl in tags]) - cfg.stop_buffer_atr * a
@@ -234,6 +243,11 @@ class Market:
                     stop = min(lo, line.value_at(t)) - cfg.stop_buffer_atr * a
                     return self._finish("long", "breakout", t, an, stop,
                                         [f"close above {_tf(line)}falling trendline at {px(line.value_at(t))}"])
+            for pat in an.patterns if cfg.patterns else []:
+                if pat.side == "long" and pat.broken_at == t:
+                    v = pat.neck(t)
+                    return self._finish("long", "breakout", t, an, min(lo, v) - cfg.stop_buffer_atr * a,
+                                        [f"close above {pat.kind} neckline at {px(v)}"], target=pat.target)
         return None
 
     def _short(self, t: int, an: Analysis) -> Signal | None:
@@ -263,6 +277,8 @@ class Market:
                    if b.kind == "bearish" and hi >= b.low - buf and c < b.high), None)
         if ob:
             tags.append((f"bearish order block {px(ob.low)}-{px(ob.high)}", ob.high))
+        if cfg.patterns:
+            tags += self._pattern_tags("short", t, an, buf)
 
         if len(tags) >= cfg.min_confluence:
             stop = max([hi] + [lvl for _, lvl in tags]) + cfg.stop_buffer_atr * a
@@ -277,18 +293,43 @@ class Market:
                     stop = max(hi, line.value_at(t)) + cfg.stop_buffer_atr * a
                     return self._finish("short", "breakout", t, an, stop,
                                         [f"close below {_tf(line)}rising trendline at {px(line.value_at(t))}"])
+            for pat in an.patterns if cfg.patterns else []:
+                if pat.side == "short" and pat.broken_at == t:
+                    v = pat.neck(t)
+                    return self._finish("short", "breakout", t, an, max(hi, v) + cfg.stop_buffer_atr * a,
+                                        [f"close below {pat.kind} neckline at {px(v)}"], target=pat.target)
         return None
 
-    def _finish(self, side: str, setup: str, t: int, an: Analysis, stop: float, reasons: list[str]) -> Signal | None:
+    def _pattern_tags(self, side: str, t: int, an: Analysis, buf: float) -> list[tuple[str, float]]:
+        """Patterns as levels: the candle itself, a neckline retest after its break, a double bottom/top."""
+        lo, hi, c = self.l[t], self.h[t], self.c[t]
+        tags = []
+        if an.candle and an.candle[1] == side:
+            tags.append((an.candle[0], lo if side == "long" else hi))
+        for pat in an.patterns:
+            if pat.side != side:
+                continue
+            if pat.broken_at is not None and pat.broken_at < t:
+                v, what = pat.neck(t), f"retest of {pat.kind} neckline"
+            elif pat.broken_at is None and pat.kind in ("double bottom", "double top"):
+                v, what = pat.invalid, pat.kind
+            else:
+                continue
+            if (lo <= v + buf and c > v) if side == "long" else (hi >= v - buf and c < v):
+                tags.append((f"{what} at {px(v)}", v))
+        return tags
+
+    def _finish(self, side: str, setup: str, t: int, an: Analysis, stop: float, reasons: list[str],
+                target: float | None = None) -> Signal | None:
         c, floor = self.c[t], self.cfg.min_stop_atr * an.atr
         stop = min(stop, c - floor) if side == "long" else max(stop, c + floor)
-        if side == "long":
+        if target is None and side == "long":   # the nearest obstacle (a chart pattern brings its measured move)
             obstacles = [z.low for z in an.resistance + an.htf_resistance if z.low > c]
             obstacles += [b.low for b in an.order_blocks if b.kind == "bearish" and b.low > c]
             obstacles += [v for line in an.trendlines if line.kind == "resistance" and line.broken_at is None
                           and (v := line.value_at(t)) > c]
             target = min(obstacles) if obstacles else c + self.cfg.default_rr * (c - stop)
-        else:
+        elif target is None:
             obstacles = [z.high for z in an.support + an.htf_support if z.high < c]
             obstacles += [b.high for b in an.order_blocks if b.kind == "bullish" and b.high < c]
             obstacles += [v for line in an.trendlines if line.kind == "support" and line.broken_at is None

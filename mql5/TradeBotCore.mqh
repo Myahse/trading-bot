@@ -36,6 +36,11 @@ enum ETrail   { TRAIL_NONE = 0,     // No trailing stop
 #define LINE_BREAK_ATR      0.1
 #define LINE_MAX_SLOPE_ATR  0.5
 #define PFX                 "TB_"
+#define PATTERN_TOL_ATR     0.5
+#define PATTERN_DEPTH_ATR   1.5
+#define HEAD_ATR            0.5
+#define PAT_BREAK_ATR       0.1
+#define PAT_FAIL_ATR        0.3
 
 //--- data types
 struct Config
@@ -47,6 +52,7 @@ struct Config
    double            riskPct, minLotMaxRisk, beR, partialR, partialPct, trailStartR, trailATR, maxDailyLoss;
    int               trail, maxTradesDay;
    bool              zoneBest;            // charts: only the best zone (swing) instead of every tradable one (scalp)
+   bool              patterns;            // candlestick and chart patterns count as levels (and neckline breaks)
   };
 
 struct Pivot  { int index; double price; int kind; int confirmed; };          // kind +1 swing high, -1 swing low
@@ -57,6 +63,10 @@ struct OBlock { int kind; int index; double lo; double hi; int created; int inva
 struct Tag    { string reason; double level; };
 struct Signal { int side; string setup; double entry; double stop; double target; double trigger; double rr; string reasons;
                 double zoneLo; double zoneHi; double htfLo; double htfHi; };   // zones the rejection came off (0 = none)
+
+// A chart pattern (port of tradebot/patterns.py): its swings, its neckline and whether it broke
+struct CPattern { string kind; int side; int np; int pi[5]; double pp[5]; int n1; double p1; int n2; double p2;
+                  int complete; int broken; double invalid; double height; };
 
 // A zone the bot could trade from, with the plan if price came back to it (port of tradebot/zoneplan.py)
 struct ZPlan  { double lo; double hi; int side; bool htf; bool backed; double entry; double stop; double target;
@@ -76,6 +86,8 @@ Zone     ZS[], ZR[], HZS[], HZR[];                                            //
 Line     L[];   Line LH[];
 OBlock   OB[];
 int      biasE = 0, biasH = 0, direction = 0;
+CPattern PAT[];                                                               // chart patterns alive now
+string   candleName = "";  int candleSide = 0;                                // candlestick pattern on the last candle
 int      gHistoryBars = 5000, gHTFHistoryBars = 1000;                         // candles analysed
 
 //+------------------------------------------------------------------+
@@ -100,7 +112,7 @@ void ApplyPreset(int preset)
       C.minStopATR = 1.0; C.trendFilter = true; C.breakouts = true;
       C.riskPct = 0.5; C.minLotMaxRisk = 5.0; C.beR = 1.0; C.partialR = 1.0; C.partialPct = 50.0;
       C.trail = TRAIL_ATR; C.trailStartR = 1.0; C.trailATR = 1.5; C.maxDailyLoss = 3.0; C.maxTradesDay = 8;
-      C.zoneBest = false;
+      C.zoneBest = false; C.patterns = false;   // shown, not counted: they made 5m entries worse
      }
    else if(preset == PRESET_SWING)
      {
@@ -109,7 +121,7 @@ void ApplyPreset(int preset)
       C.minStopATR = 0.0; C.trendFilter = true; C.breakouts = true;
       C.riskPct = 1.0; C.minLotMaxRisk = 5.0; C.beR = 1.0; C.partialR = 1.5; C.partialPct = 50.0;
       C.trail = TRAIL_SWING; C.trailStartR = 1.5; C.trailATR = 2.0; C.maxDailyLoss = 0.0; C.maxTradesDay = 0;
-      C.zoneBest = true;
+      C.zoneBest = true; C.patterns = true;
      }
   }
 
@@ -520,7 +532,150 @@ bool Analyse(int shift = 1)
          NH = 0;
      }
    direction = (NH > 0) ? biasH : biasE;
+   candleName = ""; candleSide = 0; ArrayResize(PAT, 0);
+   if(Valid(A[t]))
+     {
+      CandlePattern(t);
+      FindChartPatterns(t);
+     }
    return Valid(A[t]);
+  }
+
+
+//+------------------------------------------------------------------+
+//| Patterns (port of tradebot/patterns.py)                          |
+//+------------------------------------------------------------------+
+// Candlestick pattern on candle t: engulfing, morning/evening star, hammer/shooting star.
+void CandlePattern(int t)
+  {
+   candleName = ""; candleSide = 0;
+   if(t < 2) return;
+   double o = R[t].open, h = R[t].high, l = R[t].low, c = R[t].close, rng = h - l;
+   if(rng <= 0) return;
+   double body = MathAbs(c - o), body1 = MathAbs(R[t - 1].close - R[t - 1].open);
+   double o1 = R[t - 1].open, c1 = R[t - 1].close;
+   if(c > o && c1 < o1 && c >= o1 && o <= c1 && body > body1) { candleName = "bullish engulfing"; candleSide = 1; return; }
+   if(c < o && c1 > o1 && c <= o1 && o >= c1 && body > body1) { candleName = "bearish engulfing"; candleSide = -1; return; }
+   double rng2 = R[t - 2].high - R[t - 2].low, body2 = MathAbs(R[t - 2].close - R[t - 2].open);
+   if(rng2 > 0 && body2 >= 0.6 * rng2 && body1 <= 0.3 * body2)
+     {
+      double mid2 = (R[t - 2].open + R[t - 2].close) / 2;
+      if(R[t - 2].close < R[t - 2].open && c > o && c > mid2) { candleName = "morning star"; candleSide = 1; return; }
+      if(R[t - 2].close > R[t - 2].open && c < o && c < mid2) { candleName = "evening star"; candleSide = -1; return; }
+     }
+   double lower = MathMin(o, c) - l, upper = h - MathMax(o, c);
+   if(lower >= 0.6 * rng && lower >= 2 * body && upper <= 0.25 * rng) { candleName = "hammer"; candleSide = 1; return; }
+   if(upper >= 0.6 * rng && upper >= 2 * body && lower <= 0.25 * rng) { candleName = "shooting star"; candleSide = -1; return; }
+  }
+
+double PatNeck(const CPattern &p, double i)
+  {
+   return (p.n2 == p.n1) ? p.p1 : p.p1 + (p.p2 - p.p1) / (p.n2 - p.n1) * (i - p.n1);
+  }
+
+// The measured move: the pattern's height beyond the neckline, from the break.
+double PatTarget(const CPattern &p)
+  {
+   double x = (p.broken >= 0) ? p.broken : p.pi[p.np - 1];
+   return PatNeck(p, x) + p.side * p.height;
+  }
+
+// Follows the pattern from its completion to t: its neckline break, or its failure. False = drop it.
+bool TrackPattern(CPattern &p, int t, int maxAge, int retest)
+  {
+   p.broken = -1;
+   if(p.complete > t) return false;
+   for(int j = p.complete; j <= t; j++)
+     {
+      double a = A[j];
+      if(!Valid(a)) continue;
+      if(p.side * (R[j].close - PatNeck(p, j)) > PAT_BREAK_ATR * a)
+        {
+         if(t - j > retest) return false;
+         p.broken = j;
+         return true;
+        }
+      if(p.side * (p.invalid - R[j].close) > PAT_FAIL_ATR * a) return false;
+     }
+   return t - p.complete <= maxAge;
+  }
+
+void AddPattern(CPattern &p, int t)
+  {
+   if(!TrackPattern(p, t, C.obMaxAge, C.retest)) return;
+   int k = ArraySize(PAT);
+   ArrayResize(PAT, k + 1);
+   PAT[k] = p;
+  }
+
+// The swing (index into P) of kind `kind` between bars i1 and i2 that is furthest in `dir`, or -1.
+int ExtremeBetween(int kind, int i1, int i2, int dir)
+  {
+   int best = -1;
+   for(int q = 0; q < NP; q++)
+      if(P[q].kind == kind && P[q].index > i1 && P[q].index < i2 && (best < 0 || dir * P[q].price > dir * P[best].price))
+         best = q;
+   return best;
+  }
+
+// Double bottom/top and (inverse) head and shoulders, from the swings confirmed by t.
+void FindChartPatterns(int t)
+  {
+   ArrayResize(PAT, 0);
+   for(int side = 1; side >= -1; side -= 2)
+     {
+      int kindExt = (side == 1) ? -1 : 1;           // long: the lows make it, the highs between make the neckline
+      int ext[];
+      int ne = 0;
+      for(int q = 0; q < NP; q++) if(P[q].kind == kindExt) { ArrayResize(ext, ne + 1); ext[ne++] = q; }
+      if(ne >= 2)
+        {
+         Pivot a = P[ext[ne - 2]], b = P[ext[ne - 1]];
+         int mid = ExtremeBetween(-kindExt, a.index, b.index, side);
+         double atrB = A[b.index];
+         if(mid >= 0 && Valid(atrB))
+           {
+            double worst = (side == 1) ? MathMin(a.price, b.price) : MathMax(a.price, b.price);
+            if(MathAbs(a.price - b.price) <= PATTERN_TOL_ATR * atrB && side * (P[mid].price - worst) >= PATTERN_DEPTH_ATR * atrB)
+              {
+               CPattern p;
+               p.kind = (side == 1) ? "double bottom" : "double top"; p.side = side; p.np = 3;
+               p.pi[0] = a.index; p.pp[0] = a.price; p.pi[1] = P[mid].index; p.pp[1] = P[mid].price; p.pi[2] = b.index; p.pp[2] = b.price;
+               p.n1 = P[mid].index; p.p1 = P[mid].price; p.n2 = b.index; p.p2 = P[mid].price;
+               p.complete = b.confirmed; p.broken = -1; p.invalid = worst; p.height = side * (P[mid].price - worst);
+               AddPattern(p, t);
+              }
+           }
+        }
+      if(ne >= 3)
+        {
+         Pivot s1 = P[ext[ne - 3]], hd = P[ext[ne - 2]], s2 = P[ext[ne - 1]];
+         double atrS = A[s2.index];
+         int m1 = ExtremeBetween(-kindExt, s1.index, hd.index, side), m2 = ExtremeBetween(-kindExt, hd.index, s2.index, side);
+         double shoulder = (side == 1) ? MathMin(s1.price, s2.price) : MathMax(s1.price, s2.price);
+         if(m1 >= 0 && m2 >= 0 && Valid(atrS) && MathAbs(s1.price - s2.price) <= 2 * PATTERN_TOL_ATR * atrS &&
+            side * shoulder - side * hd.price >= HEAD_ATR * atrS)
+           {
+            CPattern p;
+            p.kind = (side == 1) ? "inverse head and shoulders" : "head and shoulders"; p.side = side; p.np = 5;
+            p.pi[0] = s1.index; p.pp[0] = s1.price; p.pi[1] = P[m1].index; p.pp[1] = P[m1].price; p.pi[2] = hd.index; p.pp[2] = hd.price;
+            p.pi[3] = P[m2].index; p.pp[3] = P[m2].price; p.pi[4] = s2.index; p.pp[4] = s2.price;
+            p.n1 = P[m1].index; p.p1 = P[m1].price; p.n2 = P[m2].index; p.p2 = P[m2].price;
+            p.complete = s2.confirmed; p.broken = -1; p.invalid = hd.price;
+            p.height = side * (PatNeck(p, hd.index) - hd.price);
+            if(p.height > 0) AddPattern(p, t);
+           }
+        }
+     }
+  }
+
+// A rising and a falling entry-chart trendline, both intact: price is coiling into a triangle.
+bool Triangle()
+  {
+   bool sup = false, res = false;
+   for(int i = 0; i < ArraySize(L); i++)
+      if(L[i].broken < 0) { if(L[i].kind == 1) sup = true; else res = true; }
+   return sup && res;
   }
 
 //+------------------------------------------------------------------+
@@ -534,16 +689,17 @@ void AddTag(Tag &tags[], string reason, double level)
    tags[k].level = level;
   }
 
-bool Finish(int side, string setup, double stop, string reasons, Signal &s)
+bool Finish(int side, string setup, double stop, string reasons, Signal &s, double targetOverride = EMPTY_VALUE)
   {
    int t = N - 1;
    double c = R[t].close, a = A[t];
    double floorDist = C.minStopATR * a;
    stop = (side == 1) ? MathMin(stop, c - floorDist) : MathMax(stop, c + floorDist);
 
-   bool have = false;
-   double target = 0;
-   if(side == 1)
+   bool have = (targetOverride != EMPTY_VALUE);      // a chart pattern brings its measured move
+   double target = have ? targetOverride : 0;
+   if(have) {}
+   else if(side == 1)
      {
       for(int i = 0; i < ArraySize(ZR); i++)  if(ZR[i].lo > c  && (!have || ZR[i].lo < target))  { target = ZR[i].lo;  have = true; }
       for(int i = 0; i < ArraySize(HZR); i++) if(HZR[i].lo > c && (!have || HZR[i].lo < target)) { target = HZR[i].lo; have = true; }
@@ -664,6 +820,21 @@ bool Setup(int side, Signal &s)
         { AddTag(tags, StringFormat("bearish order block %s-%s", PS(OB[i].lo), PS(OB[i].hi)), OB[i].hi); break; }
      }
 
+   if(C.patterns)                                 // patterns as levels: the candle, a neckline retest, a double bottom/top
+     {
+      if(candleSide == side) AddTag(tags, candleName, side == 1 ? lo : h);
+      for(int i = 0; i < ArraySize(PAT); i++)
+        {
+         if(PAT[i].side != side) continue;
+         double v;
+         string what;
+         if(PAT[i].broken >= 0 && PAT[i].broken < t) { v = PatNeck(PAT[i], t); what = "retest of " + PAT[i].kind + " neckline"; }
+         else if(PAT[i].broken < 0 && (PAT[i].kind == "double bottom" || PAT[i].kind == "double top")) { v = PAT[i].invalid; what = PAT[i].kind; }
+         else continue;
+         if(side == 1 ? (lo <= v + buf && c > v) : (h >= v - buf && c < v)) AddTag(tags, what + " at " + PS(v), v);
+        }
+     }
+
    int nt = ArraySize(tags);
    if(nt >= C.minConfluence)
      {
@@ -682,6 +853,7 @@ bool Setup(int side, Signal &s)
 
    // trendline breakout: a strong candle closes through a trendline (either timeframe) on this very candle
    if(C.breakouts && side * (c - o) >= BREAKOUT_BODY * (h - lo))
+     {
       for(int k = 0; k < 2; k++)
         {
          int cnt = (k == 0) ? ArraySize(L) : ArraySize(LH);
@@ -699,6 +871,17 @@ bool Setup(int side, Signal &s)
             return true;
            }
         }
+      for(int i = 0; i < ArraySize(PAT) && C.patterns; i++)   // chart pattern: a close through its neckline
+        {
+         if(PAT[i].side != side || PAT[i].broken != t) continue;
+         double v = PatNeck(PAT[i], t);
+         double stop = (side == 1) ? MathMin(lo, v) - STOP_BUF_ATR * a : MathMax(h, v) + STOP_BUF_ATR * a;
+         if(!Finish(side, "breakout", stop, StringFormat("close %s %s neckline at %s", side == 1 ? "above" : "below", PAT[i].kind, PS(v)),
+                    s, PatTarget(PAT[i]))) return false;
+         s.zoneLo = 0; s.zoneHi = 0; s.htfLo = 0; s.htfHi = 0;
+         return true;
+        }
+     }
    return false;
   }
 

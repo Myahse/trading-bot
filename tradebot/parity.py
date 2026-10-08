@@ -28,7 +28,7 @@ ZONE_COLS = {"sup": "support", "res": "resistance", "hsup": "htf_support", "hres
 # as doubles with 8 significant digits in the CSV).
 EXACT = ["pivots", "bias", "htf_bias", "n_zones", "sup_touches", "res_touches", "n_htf_zones",
          "hsup_touches", "hres_touches", "n_lines", "n_htf_lines", "n_obs", "side", "setup", "n_plans", "n_tradable",
-         "best_side"]
+         "best_side", "candle", "n_patterns"]
 PRICES = ["atr", "sup_lo", "sup_hi", "res_lo", "res_hi", "hsup_lo", "hsup_hi", "hres_lo", "hres_hi",
           "stop", "target", "trigger", "best_lo", "best_hi", "best_stop", "best_target"]
 # What each group of columns depends on, so a report says which part of the port drifts.
@@ -40,6 +40,7 @@ GROUPS = {
     "Trendlines": ["n_lines", "n_htf_lines"],
     "Order blocks": ["n_obs"],
     "Signals": ["side", "setup", "stop", "target", "trigger"],
+    "Patterns": ["candle", "n_patterns"],
     "Zone plans": ["n_plans", "n_tradable", "best_side", "best_lo", "best_hi", "best_stop", "best_target"],
 }
 
@@ -47,7 +48,7 @@ GROUPS = {
 def read_mt5(path: str) -> pd.DataFrame:
     out = pd.read_csv(path, keep_default_na=False, na_values=[""])
     out["time"] = pd.to_datetime(out["time"], format="%Y.%m.%d %H:%M", utc=True)
-    for col in ("side", "setup", "best_side"):
+    for col in ("side", "setup", "best_side", "candle"):
         out[col] = out[col].fillna("").astype(str)
     return out
 
@@ -91,6 +92,7 @@ def python_rows(candles: pd.DataFrame, cfg: StrategyConfig, times) -> pd.DataFra
         row.update(n_plans=len(plans), n_tradable=sum(p.tradable for p in plans), best_side=b.side if b else "",
                    best_lo=b.zone.low if b else math.nan, best_hi=b.zone.high if b else math.nan,
                    best_stop=b.stop if b else math.nan, best_target=b.target if b else math.nan)
+        row.update(candle=an.candle[0] if an.candle else "", n_patterns=len(an.patterns))
         rows.append(row)
     return pd.DataFrame(rows)
 

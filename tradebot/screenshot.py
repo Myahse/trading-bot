@@ -185,6 +185,16 @@ def analysis_steps(market: Market, an: Analysis, entry_tf: str, htf_tf: str,
     steps.append((DOT, f"Order blocks: {len(an.order_blocks)} active",
                   "; ".join(f"{b.kind} {px(b.low)}-{px(b.high)}" for b in obs) + "." if obs else "None active."))
 
+    from .patterns import triangle
+    pats = [f"{p.kind}" + (" (neckline broken)" if p.broken_at is not None else f", neckline {px(p.neck(an.bar))}")
+            for p in an.patterns]
+    if triangle(an.trendlines):
+        pats.append("triangle (price coiling between a rising and a falling line)")
+    if an.candle:
+        pats.append(f"{an.candle[0]} candle")
+    steps.append((OK if pats else DOT, f"Patterns: {len(pats)}",
+                  "; ".join(pats) + ("." if market.cfg.patterns else ". Shown only: they do not change the entries in this mode.")
+                  if pats else "None."))
     from .zoneplan import best_plan, plan_zones, scenarios
     plans = plan_zones(market, an)
     tradable = [p for p in plans if p.tradable]

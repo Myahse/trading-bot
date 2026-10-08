@@ -38,6 +38,8 @@ It runs inside MT5 on a chart and places the trades itself.
      (red: down through a rising one) on the candle that closed through. On a breakout setup the
      broken line is drawn thick, labelled **TRENDLINE BREAK**, with the ENTER HERE arrow
    - the nearest order blocks
+   - chart patterns (double bottom/top, head and shoulders and its inverse): their swings joined, the
+     neckline dashed, the name; and the candlestick pattern's name under/over the last candle
    - swing labels (HH / HL / LH / LL)
    - for a setup, the entry, SL and TP lines. A setup waiting for its confirmation stays on the chart
      until it fills or is cancelled. While it is on:
@@ -50,6 +52,7 @@ It runs inside MT5 on a chart and places the trades itself.
    - **TREND:** both timeframes, and whether it is buys only, sells only or no direction
    - **PRICE:** the price and the nearest support and resistance
    - **LEVELS:** trendlines and order blocks
+   - **PATTERNS:** the chart patterns, a triangle, the candlestick pattern ("shown only" on Scalp)
    - **BREAK** (after a trendline break): which line broke, where, how many candles ago, and whether to
      buy/sell on the breakout or the retest, or that it goes against the trend
    - **SETUP:** the live setup, the one waiting for its confirmation, or none
@@ -168,6 +171,7 @@ what the Python backtests showed. Tick *Visual mode* to watch it trade candle by
 | Risk per trade | 0.5% | 1% |
 | Partial / break-even / trail | 50% at 1R / 1R / 1.5 ATR from 1R | 50% at 1.5R / 1R / swings from 1.5R |
 | Daily limits | -3%, 8 trades | off |
+| Patterns count as levels | no (shown only) | yes |
 
 Choose **Custom** to set every value yourself in the inputs.
 

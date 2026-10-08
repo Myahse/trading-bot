@@ -34,6 +34,7 @@ input double   InpMinStopATR      = 1.0;            // Minimum stop distance in 
 input int      InpOBMaxAge        = 100;            // Bars an order block stays valid
 input int      InpZoneLookback    = 30;             // Recent swings used to build zones
 input bool     InpZoneBest        = false;          // Chart: only the best zone (true) or every tradable zone
+input bool     InpPatterns        = true;           // Candlestick/chart patterns count as levels (Custom preset)
 
 input group "Money management (Custom preset)"
 input double   InpRiskPct         = 0.5;            // Risk per trade, % of balance
@@ -131,7 +132,7 @@ void LoadConfig()
    C.minStopATR = InpMinStopATR; C.trendFilter = InpTrendFilter; C.breakouts = InpBreakouts;
    C.riskPct = InpRiskPct; C.minLotMaxRisk = InpMinLotMaxRisk; C.beR = InpBreakevenR; C.partialR = InpPartialR;
    C.partialPct = InpPartialPct; C.trail = (int)InpTrail; C.trailStartR = InpTrailStartR; C.trailATR = InpTrailATR;
-   C.maxDailyLoss = InpMaxDailyLossPct; C.maxTradesDay = InpMaxTradesDay; C.zoneBest = InpZoneBest;
+   C.maxDailyLoss = InpMaxDailyLossPct; C.maxTradesDay = InpMaxTradesDay; C.zoneBest = InpZoneBest; C.patterns = InpPatterns;
 
    ApplyPreset((int)InpPreset);   // Scalp/Swing overwrite the inputs
    gHistoryBars = InpHistoryBars;
@@ -559,6 +560,28 @@ void Draw(const Signal &s, bool haveSignal)
         }
      }
 
+   // chart patterns: their swings joined, the neckline dashed, the name; the candlestick pattern under/over its candle
+   for(int i = 0; i < ArraySize(PAT); i++)
+     {
+      CPattern pt = PAT[i];
+      if(pt.pi[0] < N - 200) continue;
+      color pc = (pt.side == 1) ? up : dn;
+      string nm = PFX + "pat" + IntegerToString(i);
+      for(int q = 0; q + 1 < pt.np; q++)
+         Segment(nm + "s" + IntegerToString(q), R[pt.pi[q]].time, pt.pp[q], R[pt.pi[q + 1]].time, pt.pp[q + 1], pc, 1, STYLE_SOLID, false);
+      int end = (pt.broken >= 0) ? pt.broken : t;
+      Segment(nm + "n", R[pt.n1].time, PatNeck(pt, pt.n1), R[end].time, PatNeck(pt, end), pc, 2, STYLE_DASH, false);
+      double ext = pt.pp[0];
+      for(int q = 1; q < pt.np; q++) ext = (pt.side == 1) ? MathMin(ext, pt.pp[q]) : MathMax(ext, pt.pp[q]);
+      string name = pt.kind;
+      StringToUpper(name);
+      Text(nm + "T", R[pt.pi[pt.np / 2]].time, ext, name + (pt.broken >= 0 ? " - neckline broken" : ""), pc,
+           pt.side == 1 ? ANCHOR_UPPER : ANCHOR_LOWER, 8, "Arial Bold");
+     }
+   if(candleSide != 0)
+      Text(PFX + "candle", R[t].time, candleSide == 1 ? R[t].low : R[t].high, candleName, candleSide == 1 ? up : dn,
+           candleSide == 1 ? ANCHOR_UPPER : ANCHOR_LOWER, 8);
+
    for(int kind = -1; kind <= 1; kind += 2)                // nearest active order block on each side
      {
       int bestI = -1;
@@ -810,6 +833,13 @@ void Panel(const Signal &s, bool haveSignal, string status)
    int obs = 0;
    for(int i = 0; i < ArraySize(OB); i++) if(OBActive(OB[i], t)) obs++;
    PanelRow("LEVELS", StringFormat("%d trendlines on %s, %d on %s,  %d order blocks", ArraySize(L), tfE, ArraySize(LH), tfH, obs), ink);
+
+   string pats = "";
+   for(int i = 0; i < ArraySize(PAT); i++)
+      pats += (pats == "" ? "" : ",  ") + PAT[i].kind + (PAT[i].broken >= 0 ? " (neckline broken)" : " (neckline " + PS(PatNeck(PAT[i], t)) + ")");
+   if(Triangle()) pats += (pats == "" ? "" : ",  ") + "triangle";
+   if(candleName != "") pats += (pats == "" ? "" : ",  ") + candleName + " candle";
+   if(pats != "") PanelRow("PATTERNS", pats + (C.patterns ? "" : "  -  shown only"), ink);
 
    string brk = LastBreak(t, dir, tfE, tfH);
    if(brk != "") PanelRow("BREAK", brk, StringFind(brk, "up") >= 0 ? up : dn);

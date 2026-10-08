@@ -50,7 +50,7 @@ void OnStart()
    if(h == INVALID_HANDLE) { Print("TradeBotParity: cannot write ", file, ", error ", GetLastError()); return; }
    FileWriteString(h, "time,bars,atr,pivots,bias,htf_bias,n_zones,sup_lo,sup_hi,sup_touches,res_lo,res_hi,res_touches,"
                       "n_htf_zones,hsup_lo,hsup_hi,hsup_touches,hres_lo,hres_hi,hres_touches,n_lines,n_htf_lines,"
-                      "n_obs,side,setup,stop,target,trigger,n_plans,n_tradable,best_side,best_lo,best_hi,best_stop,best_target\n");
+                      "n_obs,side,setup,stop,target,trigger,n_plans,n_tradable,best_side,best_lo,best_hi,best_stop,best_target,candle,n_patterns\n");
    int total = Bars(_Symbol, PERIOD_CURRENT);
    int done = 0;
    for(int shift = MathMin(InpBars, total - 1); shift >= 1; shift--)
@@ -68,14 +68,14 @@ void OnStart()
       for(int i = 0; i < np; i++) if(plans[i].tradable) nt++;
       string bestCols = (b < 0) ? ",,,," : StringFormat("%s,%.8g,%.8g,%.8g,%.8g", plans[b].side == 1 ? "long" : "short",
                                                          plans[b].lo, plans[b].hi, plans[b].stop, plans[b].target);
-      FileWriteString(h, StringFormat("%s,%d,%.8g,%d,%d,%d,%d,%s,%s,%d,%s,%s,%d,%d,%d,%s,%s,%s,%s,%s,%d,%d,%s\n",
+      FileWriteString(h, StringFormat("%s,%d,%.8g,%d,%d,%d,%d,%s,%s,%d,%s,%s,%d,%d,%d,%s,%s,%s,%s,%s,%d,%d,%s,%s,%d\n",
                       TimeToString(R[t].time, TIME_DATE | TIME_MINUTES), N, A[t], NP, biasE, NH > 0 ? biasH : 0,
                       ArraySize(ZS) + ArraySize(ZR), ZoneCols(ZS), ZoneCols(ZR),
                       ArraySize(HZS) + ArraySize(HZR), ZoneCols(HZS), ZoneCols(HZR),
                       ArraySize(L), ArraySize(LH), obs,
                       have ? (s.side == 1 ? "long" : "short") : "", have ? s.setup : "",
                       have ? StringFormat("%.8g", s.stop) : "", have ? StringFormat("%.8g", s.target) : "",
-                      have ? StringFormat("%.8g", s.trigger) : "", np, nt, bestCols));
+                      have ? StringFormat("%.8g", s.trigger) : "", np, nt, bestCols, candleName, ArraySize(PAT)));
       done++;
      }
    FileClose(h);

@@ -340,6 +340,42 @@ GBPUSD 0.00015.
 | swing | USDJPY | 41 / 20% / 0.58 / -13.8% | 26 / 23% / 0.52 / -9.1% |
 | swing | GBPUSD | 38 / 29% / 0.86 / -3.7% | 32 / 31% / 0.58 / -8.7% |
 
+### Trading patterns (October 2026)
+
+`tradebot/patterns.py` recognises:
+- **Candlesticks** on the signal candle: bullish/bearish engulfing, morning/evening star, hammer,
+  shooting star.
+- **Chart patterns** from the confirmed swings:
+  - double bottom/top: two swings within 0.5 ATR, at least 1.5 ATR deep
+  - head and shoulders and its inverse: a head at least 0.5 ATR beyond two shoulders within 1 ATR
+  - each has a neckline; a strong close through it is a breakout entry aimed at the **measured
+    move** (the pattern's height beyond the neckline)
+- **Triangles:** a rising and a falling trendline closing in. These are only named; their break is
+  already a trendline breakout.
+
+When patterns count (`patterns=True`), each is one more level in the 2-level confluence rule:
+- the candlestick pattern itself
+- a double bottom/top's bottom/top
+- a neckline retest after its break
+
+They are always drawn on the charts and listed in the analysis.
+
+Same candles as below, before and after (trades / win % / PF / return / max DD):
+
+| Mode | Market | Without patterns | Patterns counted |
+|---|---|---|---|
+| swing | XAUUSD | 17 / 59% / 2.12 / +8.2% / -2.3% | 27 / 56% / 2.29 / +13.7% / -3.3% |
+| swing | GBPJPY | 25 / 40% / 1.38 / +4.0% / -5.3% | 34 / 44% / 1.39 / +5.7% / -5.9% |
+| swing | USDJPY | 20 / 35% / 0.91 / -1.1% / -6.5% | 29 / 38% / 0.98 / -0.4% / -8.9% |
+| swing | GBPUSD | 15 / 33% / 0.81 / -1.4% / -3.0% | 22 / 27% / 0.66 / -3.8% / -5.1% |
+
+- **Swing** (4h): better on 3 of 4 markets, so patterns count there.
+- **Scalp** (5m): counting them made all 4 markets worse (gold +0.2% → -3.9%, GBPUSD -14.1% → -23.7%).
+  A hammer or engulfing candle in a zone is too common on 5m candles and lets weaker setups
+  through. On scalp they are therefore **shown only** (`patterns=False`). The scalp results above
+  are unchanged.
+- **Caution:** 15-34 trades per run are too few to call the swing gain proven.
+
 ### Zones with a memory (October 2026)
 
 Zones used to be rebuilt on every candle. Now they change only when a new swing confirms. Both

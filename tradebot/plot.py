@@ -148,6 +148,27 @@ def draw_entry(ax, market: Market, an: Analysis, last: int = 300, result: Backte
                                    edgecolor=colour, alpha=0.25, hatch="//", zorder=1))
             labels.add((ob.low + ob.high) / 2, f"{kind} OB", colour)
 
+    # chart patterns: their swings joined, the neckline dashed, the name; the candlestick pattern under/over its candle
+    for pat in an.patterns:
+        if pat.points[0][0] < start:
+            continue
+        colour = UP if pat.side == "long" else DOWN
+        xs, ys = zip(*pat.points)
+        ax.plot(xs, ys, color=colour, linewidth=1.2, alpha=0.8, zorder=5)
+        end = pat.broken_at if pat.broken_at is not None else n
+        ax.plot([pat.n1, end], [pat.neck(pat.n1), pat.neck(end)], color=colour, linewidth=1.4, linestyle=(0, (5, 3)), zorder=5)
+        top = max(ys) if pat.side == "short" else min(ys)
+        ax.annotate(pat.kind.upper() + (" - neckline broken" if pat.broken_at is not None else ""),
+                    (xs[len(xs) // 2], top), xytext=(0, 14 if pat.side == "short" else -14), textcoords="offset points",
+                    ha="center", va="bottom" if pat.side == "short" else "top", fontsize=8, fontweight="bold",
+                    color=colour, zorder=7)
+    if an.candle:
+        name, side = an.candle
+        y = market.l[an.bar] if side == "long" else market.h[an.bar]
+        ax.annotate(name, (an.bar, y), xytext=(0, -16 if side == "long" else 16), textcoords="offset points",
+                    ha="center", va="top" if side == "long" else "bottom", fontsize=8, fontstyle="italic",
+                    color=UP if side == "long" else DOWN, zorder=7)
+
     if show_swings:
         for p, tag in swing_labels([p for p in market.pivots_known_at(an.bar) if p.index >= start]):
             above = p.kind == "high"
