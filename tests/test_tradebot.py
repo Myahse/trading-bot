@@ -696,3 +696,19 @@ def test_far_swing_starts_a_new_level_instead_of_moving_the_old_one():
               Pivot(60, 105.2, "high", 63)]
     zones = sorted(LevelBook(swings, atr, tol_atr=0.6).at(70), key=lambda z: z.low)
     assert len(zones) == 2 and zones[0].high < 101 and zones[1].low > 104
+
+
+def test_rejection_setup_names_the_zone_it_came_off():
+    """The chart highlights the zone a rejection came off, so the signal must carry it."""
+    m = Market(data.synthetic(4000, seed=3), mode_config("scalp", htf=12))
+    signals = [s for t in range(200, 4000) if (s := m.analyze(t).signal) is not None]
+    rejections = [s for s in signals if s.setup == "rejection"]
+    assert rejections
+    for s in signals:
+        if s.setup == "breakout":
+            assert s.zone is None and s.htf_zone is None
+        for z, tag in ((s.zone, "zone"), (s.htf_zone, "HTF")):
+            if z is not None:   # its edges are in the reasons, and the stop sits beyond it
+                assert any(f"{z.touches})" in r and tag.split()[0] in r for r in s.reasons)
+                assert (s.stop < z.low) if s.side == "long" else (s.stop > z.high)
+    assert any(s.zone is not None or s.htf_zone is not None for s in rejections)

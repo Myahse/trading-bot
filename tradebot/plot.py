@@ -76,15 +76,31 @@ def draw_entry(ax, market: Market, an: Analysis, last: int = 300, result: Backte
         lo, hi = min(lo, s.stop, s.target), max(hi, s.stop, s.target)
     pad = (hi - lo) * 0.05
 
+    # With a setup on, the zone it came off is the one that matters: drawn strong, the others faded.
+    used = s.zone if s is not None else None
+    htf_used = s.htf_zone if s is not None else None
     for zones, colour in ((an.support[:2], UP), (an.resistance[:2], DOWN)):
         for z in zones:
+            if z == used:
+                continue
             ax.add_patch(Rectangle((start - 1, z.low), right - start + 1, z.high - z.low, facecolor=colour,
-                                   alpha=0.13, linewidth=0, zorder=1))
+                                   alpha=0.06 if s is not None else 0.13, linewidth=0, zorder=1))
             labels.add(z.mid, f"{px(z.mid)} zone x{z.touches}", colour)
     for z in an.htf_support[:1] + an.htf_resistance[:1]:
+        if z == htf_used:
+            continue
         ax.add_patch(Rectangle((start - 1, z.low), right - start + 1, z.high - z.low, facecolor="none",
-                               edgecolor=HTF, linewidth=1.5, zorder=1))
+                               edgecolor=HTF, linewidth=1.5, alpha=0.5 if s is not None else 1.0, zorder=1))
         labels.add(z.mid, f"HTF zone {px(z.mid)}", HTF)
+    if used is not None:
+        colour = UP if s.side == "long" else DOWN
+        ax.add_patch(Rectangle((start - 1, used.low), right - start + 1, used.high - used.low, facecolor=colour,
+                               alpha=0.35, edgecolor=colour, linewidth=1.5, zorder=1))
+        labels.add(used.mid, f"ENTRY ZONE {px(used.low)}-{px(used.high)} x{used.touches}", colour)
+    if htf_used is not None:
+        ax.add_patch(Rectangle((start - 1, htf_used.low), right - start + 1, htf_used.high - htf_used.low,
+                               facecolor=HTF, alpha=0.12, edgecolor=HTF, linewidth=2.5, zorder=1))
+        labels.add(htf_used.mid, f"ENTRY ZONE (HTF) {px(htf_used.low)}-{px(htf_used.high)}", HTF)
 
     for line in an.trendlines:
         if line.broken_at is not None and line.broken_at < start:
@@ -135,6 +151,13 @@ def draw_entry(ax, market: Market, an: Analysis, last: int = 300, result: Backte
         labels.add(s.target, f"TP {px(s.target)}  R:R {s.rr:.1f}", UP)
         ax.scatter(an.bar, market.c[an.bar], marker="^" if s.side == "long" else "v", s=90,
                    color=UP if s.side == "long" else DOWN, edgecolors="white", zorder=7)
+        # where to enter: an arrow onto the order level, its label in the free space past the stop
+        below = s.side == "long"
+        ax.annotate(f"ENTER HERE\n{order} {px(entry)}", xy=(n, entry),
+                    xytext=(right, s.stop + (-1 if below else 1) * (hi - lo) * 0.08),
+                    ha="right", va="top" if below else "bottom", fontsize=9, fontweight="bold", color=INK,
+                    arrowprops=dict(arrowstyle="-|>", color=INK, linewidth=1.6), zorder=8,
+                    bbox=dict(boxstyle="round,pad=0.3", facecolor=SURFACE, edgecolor=INK, linewidth=1))
 
     if result:
         for tr in result.trades:
@@ -148,7 +171,7 @@ def draw_entry(ax, market: Market, an: Analysis, last: int = 300, result: Backte
 
     labels.draw(ax, right + 2, lo - pad, hi + pad)
     ax.set_ylim(lo - pad, hi + pad)   # levels far from the visible price are not worth zooming out for
-    ax.set_xlim(start - 1, right + max(16, (n - start) // 6))
+    ax.set_xlim(start - 1, right + max(20, (n - start) // 5))   # room for the labels
     ax.grid(alpha=0.15)
     ax.set_facecolor(SURFACE)
 

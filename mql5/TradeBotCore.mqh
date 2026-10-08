@@ -54,7 +54,14 @@ struct Line   { int i1; double p1; int i2; double p2; int kind; int broken; int 
                                                                               // kind +1 rising support, -1 falling resistance
 struct OBlock { int kind; int index; double lo; double hi; int created; int invalid; }; // kind +1 bullish
 struct Tag    { string reason; double level; };
-struct Signal { int side; string setup; double entry; double stop; double target; double trigger; double rr; string reasons; };
+struct Signal { int side; string setup; double entry; double stop; double target; double trigger; double rr; string reasons;
+                double zoneLo; double zoneHi; double htfLo; double htfHi; };   // zones the rejection came off (0 = none)
+
+void ClearSignal(Signal &s)
+  {
+   s.side = 0; s.setup = ""; s.entry = 0; s.stop = 0; s.target = 0; s.trigger = 0; s.rr = 0; s.reasons = "";
+   s.zoneLo = 0; s.zoneHi = 0; s.htfLo = 0; s.htfHi = 0;
+  }
 
 //--- state
 Config   C;
@@ -593,24 +600,25 @@ bool Setup(int side, Signal &s)
    if(side == -1 && !(c < o && c <= h - 0.5 * (h - lo))) return false;
    double buf = TOUCH_BUF_ATR * a;
    Tag tags[];
+   double zLo = 0, zHi = 0, hLo = 0, hHi = 0;     // the zones tagged, for the chart
 
    if(side == 1)
      {
       for(int i = 0; i < ArraySize(ZS); i++)
          if(lo <= ZS[i].hi + buf && c > ZS[i].lo)
-           { AddTag(tags, StringFormat("support zone %s-%s (x%d)", PS(ZS[i].lo), PS(ZS[i].hi), ZS[i].touches), ZS[i].lo); break; }
+           { AddTag(tags, StringFormat("support zone %s-%s (x%d)", PS(ZS[i].lo), PS(ZS[i].hi), ZS[i].touches), ZS[i].lo); zLo = ZS[i].lo; zHi = ZS[i].hi; break; }
       for(int i = 0; i < ArraySize(HZS); i++)
          if(lo <= HZS[i].hi + buf && c > HZS[i].lo)
-           { AddTag(tags, StringFormat("HTF support zone %s-%s (x%d)", PS(HZS[i].lo), PS(HZS[i].hi), HZS[i].touches), HZS[i].lo); break; }
+           { AddTag(tags, StringFormat("HTF support zone %s-%s (x%d)", PS(HZS[i].lo), PS(HZS[i].hi), HZS[i].touches), HZS[i].lo); hLo = HZS[i].lo; hHi = HZS[i].hi; break; }
      }
    else
      {
       for(int i = 0; i < ArraySize(ZR); i++)
          if(h >= ZR[i].lo - buf && c < ZR[i].hi)
-           { AddTag(tags, StringFormat("resistance zone %s-%s (x%d)", PS(ZR[i].lo), PS(ZR[i].hi), ZR[i].touches), ZR[i].hi); break; }
+           { AddTag(tags, StringFormat("resistance zone %s-%s (x%d)", PS(ZR[i].lo), PS(ZR[i].hi), ZR[i].touches), ZR[i].hi); zLo = ZR[i].lo; zHi = ZR[i].hi; break; }
       for(int i = 0; i < ArraySize(HZR); i++)
          if(h >= HZR[i].lo - buf && c < HZR[i].hi)
-           { AddTag(tags, StringFormat("HTF resistance zone %s-%s (x%d)", PS(HZR[i].lo), PS(HZR[i].hi), HZR[i].touches), HZR[i].hi); break; }
+           { AddTag(tags, StringFormat("HTF resistance zone %s-%s (x%d)", PS(HZR[i].lo), PS(HZR[i].hi), HZR[i].touches), HZR[i].hi); hLo = HZR[i].lo; hHi = HZR[i].hi; break; }
      }
 
    for(int k = 0; k < 2; k++)
@@ -660,7 +668,9 @@ bool Setup(int side, Signal &s)
          reasons += (i > 0 ? "; " : "") + tags[i].reason;
         }
       stop += -side * STOP_BUF_ATR * a;
-      return Finish(side, "rejection", stop, reasons, s);
+      if(!Finish(side, "rejection", stop, reasons, s)) return false;
+      s.zoneLo = zLo; s.zoneHi = zHi; s.htfLo = hLo; s.htfHi = hHi;
+      return true;
      }
 
    // trendline breakout: a strong candle closes through a trendline (either timeframe) on this very candle
@@ -677,7 +687,9 @@ bool Setup(int side, Signal &s)
             double stop = (side == 1) ? MathMin(lo, v) - STOP_BUF_ATR * a : MathMax(h, v) + STOP_BUF_ATR * a;
             string why = StringFormat("close %s %strendline at %s", side == 1 ? "above falling" : "below rising",
                                       ln.htf ? "HTF " : "", PS(v));
-            return Finish(side, "breakout", stop, why, s);
+            if(!Finish(side, "breakout", stop, why, s)) return false;
+            s.zoneLo = 0; s.zoneHi = 0; s.htfLo = 0; s.htfHi = 0;
+            return true;
            }
         }
    return false;

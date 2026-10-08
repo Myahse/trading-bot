@@ -105,6 +105,8 @@ class Signal:
     reasons: list[str] = field(default_factory=list)
     trigger: float | None = None   # level price must break/close beyond to confirm (None: no confirmation)
     confirmation: str = "none"
+    zone: Zone | None = None       # the entry-chart zone the rejection came off (None: no zone used)
+    htf_zone: Zone | None = None   # the higher-timeframe zone it came off
 
     @property
     def rr(self) -> float:
@@ -203,9 +205,9 @@ class Market:
         zone = next((z for z in an.support if lo <= z.high + buf and c > z.low), None)
         if zone:
             tags.append((f"support zone {px(zone.low)}-{px(zone.high)} (x{zone.touches})", zone.low))
-        zone = next((z for z in an.htf_support if lo <= z.high + buf and c > z.low), None)
-        if zone:
-            tags.append((f"HTF support zone {px(zone.low)}-{px(zone.high)} (x{zone.touches})", zone.low))
+        htf_zone = next((z for z in an.htf_support if lo <= z.high + buf and c > z.low), None)
+        if htf_zone:
+            tags.append((f"HTF support zone {px(htf_zone.low)}-{px(htf_zone.high)} (x{htf_zone.touches})", htf_zone.low))
         for line in an.trendlines:
             v = line.value_at(t)
             if line.kind == "support" and line.broken_at is None and lo <= v + buf and c > v:
@@ -220,7 +222,10 @@ class Market:
 
         if len(tags) >= cfg.min_confluence:
             stop = min([lo] + [lvl for _, lvl in tags]) - cfg.stop_buffer_atr * a
-            return self._finish("long", "rejection", t, an, stop, [r for r, _ in tags])
+            signal = self._finish("long", "rejection", t, an, stop, [r for r, _ in tags])
+            if signal:
+                signal.zone, signal.htf_zone = zone, htf_zone
+            return signal
 
         if cfg.breakouts and c - o >= cfg.breakout_body * (h - lo):
             for line in an.trendlines:
@@ -243,9 +248,9 @@ class Market:
         zone = next((z for z in an.resistance if hi >= z.low - buf and c < z.high), None)
         if zone:
             tags.append((f"resistance zone {px(zone.low)}-{px(zone.high)} (x{zone.touches})", zone.high))
-        zone = next((z for z in an.htf_resistance if hi >= z.low - buf and c < z.high), None)
-        if zone:
-            tags.append((f"HTF resistance zone {px(zone.low)}-{px(zone.high)} (x{zone.touches})", zone.high))
+        htf_zone = next((z for z in an.htf_resistance if hi >= z.low - buf and c < z.high), None)
+        if htf_zone:
+            tags.append((f"HTF resistance zone {px(htf_zone.low)}-{px(htf_zone.high)} (x{htf_zone.touches})", htf_zone.high))
         for line in an.trendlines:
             v = line.value_at(t)
             if line.kind == "resistance" and line.broken_at is None and hi >= v - buf and c < v:
@@ -260,7 +265,10 @@ class Market:
 
         if len(tags) >= cfg.min_confluence:
             stop = max([hi] + [lvl for _, lvl in tags]) + cfg.stop_buffer_atr * a
-            return self._finish("short", "rejection", t, an, stop, [r for r, _ in tags])
+            signal = self._finish("short", "rejection", t, an, stop, [r for r, _ in tags])
+            if signal:
+                signal.zone, signal.htf_zone = zone, htf_zone
+            return signal
 
         if cfg.breakouts and o - c >= cfg.breakout_body * (hi - lo):
             for line in an.trendlines:

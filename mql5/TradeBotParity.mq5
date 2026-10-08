@@ -59,7 +59,7 @@ void OnStart()
       if(!Analyse(shift)) continue;
       int t = N - 1;
       Signal s;
-      s.side = 0; s.setup = ""; s.entry = 0; s.stop = 0; s.target = 0; s.trigger = 0; s.rr = 0; s.reasons = "";
+      ClearSignal(s);
       bool have = Setup(1, s) || Setup(-1, s);
       int obs = 0;
       for(int i = 0; i < ArraySize(OB); i++) if(OBActive(OB[i], t)) obs++;

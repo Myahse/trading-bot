@@ -35,7 +35,11 @@ It runs inside MT5 on a chart and places the trades itself.
    - the nearest order blocks
    - swing labels (HH / HL / LH / LL)
    - for a setup, the entry, SL and TP lines. A setup waiting for its confirmation stays on the chart
-     until it fills or is cancelled
+     until it fills or is cancelled. While it is on:
+     - the zone it came off is filled strong, outlined and labelled **ENTRY ZONE** (with the
+       higher-timeframe zone, if one was tagged too), and the other zones fade
+     - an arrow on the next candle points at the order level, labelled **ENTER HERE: BUY STOP**
+       (or SELL STOP) and the price
 5. The top-left panel shows how the bot reads the market, step by step, and what it is waiting for.
 
 On a **real** account it only analyses and never sends an order, unless you set *Allow trading a

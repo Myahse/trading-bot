@@ -460,12 +460,13 @@ void Segment(string name, datetime t1, double p1, datetime t2, double p2, color 
    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
   }
 
-void Text(string name, datetime t, double p, string txt, color clr, ENUM_ANCHOR_POINT anchor)
+void Text(string name, datetime t, double p, string txt, color clr, ENUM_ANCHOR_POINT anchor, int size = 7, string font = "Arial")
   {
    ObjectCreate(0, name, OBJ_TEXT, 0, t, p);
    ObjectSetString(0, name, OBJPROP_TEXT, txt);
+   ObjectSetString(0, name, OBJPROP_FONT, font);
    ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
-   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 7);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, size);
    ObjectSetInteger(0, name, OBJPROP_ANCHOR, anchor);
    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
   }
@@ -479,10 +480,34 @@ void Draw(const Signal &s, bool haveSignal)
    datetime left = R[MathMax(0, N - 200)].time, right = R[t].time + 12 * sec;
    color up = C'42,157,143', dn = C'231,111,81', ink = C'38,70,83', htf = C'109,89,122';
 
-   for(int i = 0; i < MathMin(2, ArraySize(ZS)); i++) Rect(PFX + "zs" + IntegerToString(i), left, ZS[i].lo, right, ZS[i].hi, C'200,232,228', true, 1);
-   for(int i = 0; i < MathMin(2, ArraySize(ZR)); i++) Rect(PFX + "zr" + IntegerToString(i), left, ZR[i].lo, right, ZR[i].hi, C'250,218,208', true, 1);
-   if(ArraySize(HZS) > 0) Rect(PFX + "hzs", left, HZS[0].lo, right, HZS[0].hi, htf, false, 2);
-   if(ArraySize(HZR) > 0) Rect(PFX + "hzr", left, HZR[0].lo, right, HZR[0].hi, htf, false, 2);
+   // the setup on the chart: a new one, or one still waiting for its confirmation until filled/cancelled
+   Signal shown = s;
+   bool show = haveSignal;
+   if(armed) { shown = armedSig; show = true; }
+
+   // zones: with a setup on, the one it came off is drawn strong and the others faded
+   color supFill = show ? C'230,243,241' : C'200,232,228', resFill = show ? C'252,238,233' : C'250,218,208';
+   for(int i = 0; i < MathMin(2, ArraySize(ZS)); i++)
+      if(!(show && ZS[i].lo == shown.zoneLo && ZS[i].hi == shown.zoneHi))
+         Rect(PFX + "zs" + IntegerToString(i), left, ZS[i].lo, right, ZS[i].hi, supFill, true, 1);
+   for(int i = 0; i < MathMin(2, ArraySize(ZR)); i++)
+      if(!(show && ZR[i].lo == shown.zoneLo && ZR[i].hi == shown.zoneHi))
+         Rect(PFX + "zr" + IntegerToString(i), left, ZR[i].lo, right, ZR[i].hi, resFill, true, 1);
+   if(ArraySize(HZS) > 0 && !(show && HZS[0].lo == shown.htfLo)) Rect(PFX + "hzs", left, HZS[0].lo, right, HZS[0].hi, htf, false, show ? 1 : 2);
+   if(ArraySize(HZR) > 0 && !(show && HZR[0].lo == shown.htfLo)) Rect(PFX + "hzr", left, HZR[0].lo, right, HZR[0].hi, htf, false, show ? 1 : 2);
+   datetime zoneLabelAt = R[MathMax(0, t - 60)].time;      // zone labels sit just left of the recent candles
+   if(show && shown.zoneHi > 0)
+     {
+      color side = (shown.side == 1) ? up : dn;
+      Rect(PFX + "ez", left, shown.zoneLo, right, shown.zoneHi, (shown.side == 1) ? C'150,205,198' : C'240,170,150', true, 1);
+      Rect(PFX + "ezb", left, shown.zoneLo, right, shown.zoneHi, side, false, 2);
+      Text(PFX + "ezT", zoneLabelAt, shown.zoneHi, "ENTRY ZONE " + PS(shown.zoneLo) + "-" + PS(shown.zoneHi), side, ANCHOR_LEFT_LOWER, 8, "Arial Bold");
+     }
+   if(show && shown.htfHi > 0)
+     {
+      Rect(PFX + "ehz", left, shown.htfLo, right, shown.htfHi, htf, false, 3);
+      Text(PFX + "ehzT", zoneLabelAt, shown.htfLo, "ENTRY ZONE (HTF) " + PS(shown.htfLo) + "-" + PS(shown.htfHi), htf, ANCHOR_LEFT_UPPER, 8, "Arial Bold");
+     }
 
    for(int i = 0; i < ArraySize(L); i++)
      {
@@ -531,9 +556,6 @@ void Draw(const Signal &s, bool haveSignal)
          Text(PFX + "s" + IntegerToString(i), R[P[i].index].time, P[i].price, tag, clrGray, isHigh ? ANCHOR_LOWER : ANCHOR_UPPER);
      }
 
-   Signal shown = s;
-   bool show = haveSignal;
-   if(armed) { shown = armedSig; show = true; }        // a waiting setup stays on the chart until filled/cancelled
    if(show)
      {
       Signal s2 = shown;
@@ -542,7 +564,16 @@ void Draw(const Signal &s, bool haveSignal)
       Segment(PFX + "sl", R[t].time, s2.stop, right, s2.stop, dn, 2, STYLE_SOLID, false);
       Segment(PFX + "tp", R[t].time, s2.target, right, s2.target, up, 2, STYLE_SOLID, false);
       string verb = (s2.side == 1) ? "BUY" : "SELL";
-      Text(PFX + "entryT", right, entry, (s2.trigger > 0 ? verb + " STOP " : verb + " ") + PS(entry), ink, ANCHOR_LEFT);
+      string order = (s2.trigger > 0 ? verb + " STOP " : verb + " ") + PS(entry);
+      Text(PFX + "entryT", right, entry, "ENTER HERE: " + order, ink, ANCHOR_LEFT, 9, "Arial Bold");
+      // an arrow on the next candle, pointing at the order level from the side price comes from
+      string arrow = PFX + "enter";
+      ObjectCreate(0, arrow, OBJ_ARROW, 0, R[t].time + sec, entry);
+      ObjectSetInteger(0, arrow, OBJPROP_ARROWCODE, s2.side == 1 ? 233 : 234);   // Wingdings up / down arrow
+      ObjectSetInteger(0, arrow, OBJPROP_ANCHOR, s2.side == 1 ? ANCHOR_TOP : ANCHOR_BOTTOM);
+      ObjectSetInteger(0, arrow, OBJPROP_COLOR, ink);
+      ObjectSetInteger(0, arrow, OBJPROP_WIDTH, 4);
+      ObjectSetInteger(0, arrow, OBJPROP_SELECTABLE, false);
       Text(PFX + "slT", right, s2.stop, "SL " + PS(s2.stop), dn, ANCHOR_LEFT);
       Text(PFX + "tpT", right, s2.target, StringFormat("TP %s  R:R %.1f", PS(s2.target), s2.rr), up, ANCHOR_LEFT);
      }
@@ -616,7 +647,7 @@ void OnTick()
    if(!Analyse()) return;
    string status = tradingPermitted ? "trading" : "analysis only (real account)";
    Signal s;
-   s.side = 0; s.setup = ""; s.entry = 0; s.stop = 0; s.target = 0; s.trigger = 0; s.rr = 0; s.reasons = "";
+   ClearSignal(s);
    bool haveSignal = Setup(1, s) || Setup(-1, s);
 
    if(tradingPermitted)

@@ -259,6 +259,9 @@ folder set to `trading-bot`: weekly on Sunday, and daily Sunday to Thursday.
 - the nearest higher-timeframe zone on each side (outlined)
 - the order block closest to price on each side
 - the trades
+- for a setup:
+  - the zone it came off, filled strong and labelled **ENTRY ZONE** with its edges (the other zones fade)
+  - an arrow labelled **ENTER HERE** pointing at the buy-stop or sell-stop level
 
 Trendlines show:
 - every swing point that touches them (o)
