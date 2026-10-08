@@ -56,6 +56,10 @@ def _parser() -> argparse.ArgumentParser:
     g.add_argument("--pivot", type=int, help="bars each side of a swing point")
     g.add_argument("--min-confluence", type=int)
     g.add_argument("--min-rr", type=float)
+    g.add_argument("--target", choices=["nearest", "next", "htf", "runner"],
+                   help="take profit at the nearest obstacle (default), the next one, the nearest higher-timeframe "
+                        "level, or let a runner go (no fixed target, the trailing stop exits)")
+    g.add_argument("--runner-rr", type=float, help="--target runner: far-away target in R (default 10)")
     g.add_argument("--confirm", choices=["refine", "break", "close", "none"],
                    help="refine: surgical entry on a lower-timeframe change of character inside the entry "
                         "zone (default in the modes); break: when price breaks the signal candle; close: after "
@@ -115,7 +119,8 @@ def _config(args) -> StrategyConfig:
     base = dict(MODES[args.mode]["config"]) if args.mode else {}
     for key, value in (("min_confluence", args.min_confluence), ("min_rr", args.min_rr), ("htf", args.htf),
                        ("pivot_left", args.pivot), ("pivot_right", args.pivot),
-                       ("confirmation", args.confirm), ("confirm_bars", args.confirm_bars), ("ltf", args.ltf)):
+                       ("confirmation", args.confirm), ("confirm_bars", args.confirm_bars), ("ltf", args.ltf), ("target", args.target),
+                       ("runner_rr", args.runner_rr)):
         if value is not None:
             base[key] = value
     if args.htf == "none":

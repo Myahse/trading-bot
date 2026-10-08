@@ -68,6 +68,26 @@ For both setups:
 - The target is the nearest thing in the way on either timeframe: a resistance zone, a bearish OB or a falling trendline. With nothing in the way it is `default_rr` x risk.
 - The trade is skipped if reward:risk is below `min_rr`.
 
+### Bigger targets (`--target`)
+
+Three things raise reward:risk: a tighter stop (surgical entries, above), a further target, and a
+higher bar for taking trades (`--min-rr`). `--target` chooses the take-profit:
+
+| `--target` | Take profit at | Reward:risk is judged against |
+|---|---|---|
+| `nearest` (default) | the first obstacle in the way | that obstacle |
+| `next` | the obstacle after it (levels within 0.5 ATR count as one); `default_rr` x risk if there is none | that obstacle |
+| `htf` | the nearest higher-timeframe level (zone or trendline) | that level |
+| `runner` | no real target (`--runner-rr`, default 10R); the trailing stop takes you out | the first obstacle: the trade still needs `--min-rr` of room |
+
+A further target wins less often, so check that the average R per trade goes up, not only the
+R:R. For runners, turn the partial off and trail behind swings, so the winners can run:
+
+```bash
+python -m tradebot backtest --mode scalp --symbol V75 --target next --min-rr 2.5
+python -m tradebot backtest --mode scalp --symbol V75 --target runner --partial off --trail swing --trail-start 1
+```
+
 ### Surgical entries (`--confirm refine`, the default in both modes)
 
 The 5m setup says **where** to trade. The 1m chart says **when**, so the stop can be small:

@@ -24,6 +24,11 @@ enum EConfirm { CONFIRM_BREAK = 0,  // Break of the signal candle's high/low
                 CONFIRM_NONE = 2,   // None: enter at the next open
                 CONFIRM_REFINE = 3  // Surgical: lower-timeframe change of character in the entry zone
               };
+enum ETarget  { TARGET_NEAREST = 0, // Nearest obstacle in the way
+                TARGET_NEXT = 1,    // The next obstacle after it (higher reward:risk)
+                TARGET_HTF = 2,     // Nearest higher-timeframe level
+                TARGET_RUNNER = 3   // Runner: no fixed target, the trailing stop exits
+              };
 enum ETrail   { TRAIL_NONE = 0,     // No trailing stop
                 TRAIL_ATR = 1,      // ATR behind the best price
                 TRAIL_SWING = 2     // Behind each new swing
@@ -39,6 +44,8 @@ input int      InpHTFPivot        = 3;              // Swing size on the higher 
 input int      InpMinConfluence   = 2;              // Levels that must be tagged together
 input double   InpMinRR           = 1.5;            // Minimum reward:risk
 input double   InpDefaultRR       = 1.5;            // Target in R when nothing is in the way
+input ETarget  InpTarget          = TARGET_NEAREST; // Take-profit target (all presets)
+input double   InpRunnerRR        = 10.0;           // Runner: far-away target in R
 input EConfirm InpConfirm         = CONFIRM_REFINE; // Entry confirmation
 input int      InpConfirmBars     = 3;              // Candles the confirmation may take
 input ENUM_TIMEFRAMES InpRefineTF = PERIOD_M1;      // Lower timeframe for surgical entries
@@ -101,7 +108,8 @@ struct Config
   {
    ENUM_TIMEFRAMES   htf, ltf;
    int               pivot, htfPivot, minConfluence, confirm, confirmBars, retest, cooldown, obMaxAge, zoneLookback;
-   double            minRR, defaultRR, minStopATR;
+   double            minRR, defaultRR, minStopATR, runnerRR;
+   int               target;
    bool              trendFilter, breakouts;
    double            riskPct, minLotMaxRisk, beR, partialR, partialPct, trailStartR, trailATR, maxDailyLoss;
    int               trail, maxTradesDay;
@@ -192,6 +200,7 @@ void LoadConfig()
   {
    // Custom: the inputs
    C.htf = InpHTF; C.pivot = InpPivot; C.htfPivot = InpHTFPivot; C.minConfluence = InpMinConfluence;
+   C.target = (int)InpTarget; C.runnerRR = InpRunnerRR;
    C.confirm = (int)InpConfirm; C.confirmBars = InpConfirmBars; C.ltf = InpRefineTF; C.retest = InpRetestBars; C.cooldown = InpCooldownBars;
    C.obMaxAge = InpOBMaxAge; C.zoneLookback = InpZoneLookback; C.minRR = InpMinRR; C.defaultRR = InpDefaultRR;
    C.minStopATR = InpMinStopATR; C.trendFilter = InpTrendFilter; C.breakouts = InpBreakouts;
@@ -590,6 +599,14 @@ void AddTag(Tag &tags[], string reason, double level)
    tags[k].level = level;
   }
 
+// An obstacle between price and the target: kept only when it is on the trade's side of price.
+void AddObstacle(double &p[], bool &h[], int &n, double v, bool htf, int side, double c)
+  {
+   if(side * (v - c) <= 0) return;
+   ArrayResize(p, n + 1); ArrayResize(h, n + 1);
+   p[n] = v; h[n] = htf; n++;
+  }
+
 bool Finish(int side, string setup, double stop, string reasons, Signal &s)
   {
    int t = N - 1;
@@ -598,56 +615,71 @@ bool Finish(int side, string setup, double stop, string reasons, Signal &s)
    double floorDist = C.minStopATR * a;
    stop = (side == 1) ? MathMin(stop, c - floorDist) : MathMax(stop, c + floorDist);
 
-   bool have = false;
-   double target = 0;
+   // every obstacle in the way (price, higher timeframe?), then the target per C.target
+   double obP[];
+   bool   obH[];
+   int    no = 0;
    if(side == 1)
      {
-      for(int i = 0; i < ArraySize(ZR); i++)  if(ZR[i].lo > c  && (!have || ZR[i].lo < target))  { target = ZR[i].lo;  have = true; }
-      for(int i = 0; i < ArraySize(HZR); i++) if(HZR[i].lo > c && (!have || HZR[i].lo < target)) { target = HZR[i].lo; have = true; }
-      for(int i = 0; i < ArraySize(OB); i++)
-         if(OB[i].kind == -1 && OBActive(OB[i], t) && OB[i].lo > c && (!have || OB[i].lo < target)) { target = OB[i].lo; have = true; }
-      for(int k = 0; k < 2; k++)
-        {
-         int cnt = (k == 0) ? ArraySize(L) : ArraySize(LH);
-         for(int i = 0; i < cnt; i++)
-           {
-            Line ln;
-            if(k == 0) ln = L[i]; else ln = LH[i];
-            if(ln.kind != -1 || ln.broken >= 0) continue;
-            double v = LineValue(ln, t);
-            if(v > c && (!have || v < target)) { target = v; have = true; }
-           }
-        }
-      if(!have) target = c + C.defaultRR * (c - stop);
+      for(int i = 0; i < ArraySize(ZR); i++)  AddObstacle(obP, obH, no, ZR[i].lo, false, side, c);
+      for(int i = 0; i < ArraySize(HZR); i++) AddObstacle(obP, obH, no, HZR[i].lo, true, side, c);
      }
    else
      {
-      for(int i = 0; i < ArraySize(ZS); i++)  if(ZS[i].hi < c  && (!have || ZS[i].hi > target))  { target = ZS[i].hi;  have = true; }
-      for(int i = 0; i < ArraySize(HZS); i++) if(HZS[i].hi < c && (!have || HZS[i].hi > target)) { target = HZS[i].hi; have = true; }
-      for(int i = 0; i < ArraySize(OB); i++)
-         if(OB[i].kind == 1 && OBActive(OB[i], t) && OB[i].hi < c && (!have || OB[i].hi > target)) { target = OB[i].hi; have = true; }
-      for(int k = 0; k < 2; k++)
+      for(int i = 0; i < ArraySize(ZS); i++)  AddObstacle(obP, obH, no, ZS[i].hi, false, side, c);
+      for(int i = 0; i < ArraySize(HZS); i++) AddObstacle(obP, obH, no, HZS[i].hi, true, side, c);
+     }
+   for(int i = 0; i < ArraySize(OB); i++)
+     {
+      if(OB[i].kind != -side || !OBActive(OB[i], t)) continue;
+      AddObstacle(obP, obH, no, side == 1 ? OB[i].lo : OB[i].hi, false, side, c);
+     }
+   for(int k = 0; k < 2; k++)
+     {
+      int cnt = (k == 0) ? ArraySize(L) : ArraySize(LH);
+      for(int i = 0; i < cnt; i++)
         {
-         int cnt = (k == 0) ? ArraySize(L) : ArraySize(LH);
-         for(int i = 0; i < cnt; i++)
-           {
-            Line ln;
-            if(k == 0) ln = L[i]; else ln = LH[i];
-            if(ln.kind != 1 || ln.broken >= 0) continue;
-            double v = LineValue(ln, t);
-            if(v < c && (!have || v > target)) { target = v; have = true; }
-           }
+         Line ln;
+         if(k == 0) ln = L[i]; else ln = LH[i];
+         if(ln.kind != -side || ln.broken >= 0) continue;
+         AddObstacle(obP, obH, no, LineValue(ln, t), k == 1, side, c);
         }
-      if(!have) target = c - C.defaultRR * (stop - c);
+     }
+   for(int i = 1; i < no; i++)                                // nearest first
+      for(int j = i; j > 0 && MathAbs(obP[j] - c) < MathAbs(obP[j - 1] - c); j--)
+        { double tp = obP[j]; obP[j] = obP[j - 1]; obP[j - 1] = tp; bool th = obH[j]; obH[j] = obH[j - 1]; obH[j - 1] = th; }
+
+   double risk0 = MathAbs(c - stop);
+   double fallback = c + side * C.defaultRR * risk0;
+   double nearest = (no > 0) ? obP[0] : fallback;
+   double target = nearest, room = nearest;                   // room: what reward:risk is judged against
+   if(C.target == TARGET_NEXT)
+     {
+      target = side * (fallback - nearest) > 0 ? fallback : nearest;
+      for(int i = 1; i < no; i++)
+         if(MathAbs(obP[i] - nearest) > 0.5 * a) { target = obP[i]; break; }   // levels within 0.5 ATR count as one
+      room = target;
+     }
+   else if(C.target == TARGET_HTF)
+     {
+      for(int i = 0; i < no; i++)
+         if(obH[i]) { target = obP[i]; break; }
+      room = target;
+     }
+   else if(C.target == TARGET_RUNNER)
+     {
+      target = c + side * C.runnerRR * risk0;
+      if(side * (target - nearest) < 0) target = nearest;     // never short of the first obstacle
+      room = nearest;                                         // still needs min R:R of room before it
      }
 
    double trigger = (C.confirm == CONFIRM_NONE || C.confirm == CONFIRM_REFINE) ? 0.0 : (side == 1 ? R[t].high : R[t].low);
    double entry = (trigger == 0.0) ? c : trigger;   // judge reward:risk from the fill level (refine: inside the zone)
    double risk = MathAbs(entry - stop);
    if(risk <= 0) return false;
-   bool beyond = (side == 1) ? entry >= target : entry <= target;
+   bool beyond = (side == 1) ? entry >= room : entry <= room;
    double rr = MathAbs(target - entry) / risk;
-   if(beyond || rr < C.minRR) return false;
+   if(beyond || MathAbs(room - entry) / risk < C.minRR) return false;
 
    s.side = side; s.setup = setup; s.entry = entry; s.stop = stop; s.target = target; s.trigger = trigger; s.rr = rr;
    s.zoneLo = 0; s.zoneHi = 0;

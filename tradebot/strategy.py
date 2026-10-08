@@ -15,7 +15,8 @@ Both need the trend filter to agree: the higher-timeframe structure when one is 
 (fractal top-down), otherwise the entry timeframe's own swings. The stop goes beyond
 the structure that was used; the target is the nearest opposing obstacle (zone,
 order block or trendline on either timeframe), or `default_rr` x risk when nothing
-is in the way. Trades below `min_rr` are skipped.
+is in the way. Trades below `min_rr` are skipped. `target` picks a further target for a
+higher reward:risk: the next obstacle, the nearest higher-timeframe one, or a runner.
 
 Confirmation (`confirmation`): by default a setup is only entered once price breaks the
 signal candle's high (long) / low (short) within `confirm_bars` bars - a buy/sell stop.
@@ -55,6 +56,12 @@ class StrategyConfig:
     min_confluence: int = 2
     min_rr: float = 1.5
     default_rr: float = 2.0
+    target: str = "nearest"             # "nearest": the first obstacle in the way
+                                        # "next": the one after it (levels within 0.5 ATR count as one)
+                                        # "htf": the nearest higher-timeframe level
+                                        # "runner": no fixed target (runner_rr x risk); the trailing stop exits.
+                                        #   Needs min_rr of room before the first obstacle.
+    runner_rr: float = 10.0
     trend_filter: bool = True
     htf: str | int | None = None        # higher timeframe: "1h", "4h", "D", "W" or a bar count
     htf_pivot: int = 3                  # bars each side of a higher-timeframe swing
@@ -288,18 +295,34 @@ class Market:
         c, floor = self.c[t], self.cfg.min_stop_atr * an.atr
         structure = stop + (1 if side == "long" else -1) * self.cfg.stop_buffer_atr * an.atr   # before buffer/floor
         stop = min(stop, c - floor) if side == "long" else max(stop, c + floor)
+        sign, risk = (1 if side == "long" else -1), abs(c - stop)
         if side == "long":
-            obstacles = [z.low for z in an.resistance + an.htf_resistance if z.low > c]
-            obstacles += [b.low for b in an.order_blocks if b.kind == "bearish" and b.low > c]
-            obstacles += [v for line in an.trendlines if line.kind == "resistance" and line.broken_at is None
+            obstacles = [(z.low, z in an.htf_resistance) for z in an.resistance + an.htf_resistance if z.low > c]
+            obstacles += [(b.low, False) for b in an.order_blocks if b.kind == "bearish" and b.low > c]
+            obstacles += [(v, line.htf) for line in an.trendlines if line.kind == "resistance" and line.broken_at is None
                           and (v := line.value_at(t)) > c]
-            target = min(obstacles) if obstacles else c + self.cfg.default_rr * (c - stop)
         else:
-            obstacles = [z.high for z in an.support + an.htf_support if z.high < c]
-            obstacles += [b.high for b in an.order_blocks if b.kind == "bullish" and b.high < c]
-            obstacles += [v for line in an.trendlines if line.kind == "support" and line.broken_at is None
+            obstacles = [(z.high, z in an.htf_support) for z in an.support + an.htf_support if z.high < c]
+            obstacles += [(b.high, False) for b in an.order_blocks if b.kind == "bullish" and b.high < c]
+            obstacles += [(v, line.htf) for line in an.trendlines if line.kind == "support" and line.broken_at is None
                           and (v := line.value_at(t)) < c]
-            target = max(obstacles) if obstacles else c - self.cfg.default_rr * (stop - c)
+        obstacles.sort(key=lambda o: abs(o[0] - c))
+        default = c + sign * self.cfg.default_rr * risk
+        nearest = obstacles[0][0] if obstacles else default
+        room = nearest   # what reward:risk is judged against
+        mode = self.cfg.target
+        if mode == "next":
+            distinct = [o for o in obstacles if abs(o[0] - nearest) > 0.5 * an.atr]
+            target = room = distinct[0][0] if distinct else (default if sign * (default - nearest) > 0 else nearest)
+        elif mode == "htf":
+            htf = [o for o in obstacles if o[1]]
+            target = room = htf[0][0] if htf else nearest
+        elif mode == "runner":
+            target = c + sign * self.cfg.runner_rr * risk
+            target = target if sign * (target - nearest) > 0 else nearest   # never short of the first obstacle
+            room = nearest   # the runner still needs min_rr of room before the first obstacle
+        else:
+            target = nearest
         trend = f"HTF bias {an.htf_bias}" if an.htf_bias is not None else f"bias {an.bias}"
         confirm = self.cfg.confirmation
         trigger = None if confirm == "none" else float(self.h[t] if side == "long" else self.l[t])
@@ -311,8 +334,9 @@ class Market:
         if confirm == "refine":   # from the structure that was tagged to the close
             zone = (float(min(structure, c)), float(max(structure, c)))
         signal = Signal(side, setup, t, entry, float(stop), float(target), reasons + [trend], trigger, confirm, zone)
-        beyond_target = (entry >= target) if side == "long" else (entry <= target)
-        return signal if not beyond_target and signal.rr >= self.cfg.min_rr else None
+        beyond_target = (entry >= room) if side == "long" else (entry <= room)
+        room_rr = abs(room - entry) / abs(entry - stop)
+        return signal if not beyond_target and room_rr >= self.cfg.min_rr else None
 
 
 def _tf(line: Trendline) -> str:

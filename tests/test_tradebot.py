@@ -798,3 +798,31 @@ def test_paper_trading_with_surgical_entries_matches_the_backtest(tmp_path, monk
     got = _closed(trader.engine.trades)
     assert got and any(t.fill_ltf is not None for t in trader.engine.trades)
     assert got == _closed(expected.trades)[:len(got)]
+
+
+@pytest.mark.parametrize("mode", ["next", "htf", "runner"])
+def test_further_targets_never_sit_closer_than_the_nearest_obstacle(mode):
+    df = data.synthetic(n=900, seed=5)
+    base = Market(df, StrategyConfig(min_confluence=1, htf=6, min_rr=0.1))
+    far = Market(df, StrategyConfig(min_confluence=1, htf=6, min_rr=0.1, target=mode, runner_rr=8))
+    compared = 0
+    for t in range(100, 900):
+        a, b = base.analyze(t).signal, far.analyze(t).signal
+        if a is None or b is None or a.side != b.side:
+            continue
+        sign = 1 if a.side == "long" else -1
+        assert sign * (b.target - a.target) >= -1e-9
+        if mode == "runner":
+            runner = df.close.iloc[t] + sign * 8 * abs(df.close.iloc[t] - b.stop)
+            assert b.target == pytest.approx(max(runner, a.target) if sign > 0 else min(runner, a.target))
+        compared += 1
+    assert compared > 0
+
+
+def test_runner_needs_room_before_the_first_obstacle():
+    df = data.synthetic(n=900, seed=5)
+    tight = Market(df, StrategyConfig(min_confluence=1, htf=6, min_rr=0.1, target="runner"))
+    strict = Market(df, StrategyConfig(min_confluence=1, htf=6, min_rr=3.0, target="runner"))
+    loose = sum(tight.analyze(t).signal is not None for t in range(100, 900))
+    kept = sum(strict.analyze(t).signal is not None for t in range(100, 900))
+    assert kept < loose   # a far target alone doesn't pass the reward:risk filter
