@@ -11,8 +11,9 @@ Sunday and a next-day outlook every evening**. It never places orders.
 > Educational code, not financial advice. Backtest and paper-trade before risking money.
 
 **MetaTrader 5 Expert Advisor:** the trading core is also available as an EA that runs inside MT5
-and places trades itself. See [`mql5/`](mql5/README.md). Compile it in MetaEditor, then test it in
-the Strategy Tester on Deriv's own prices and on a demo account.
+and places trades itself. See [`mql5/`](mql5/README.md). It compiles cleanly, and its analysis matches
+this bot candle for candle (checked in MT5). Test it in the Strategy Tester on Deriv's own prices
+and on a demo account.
 
 ## Modes
 
@@ -326,6 +327,31 @@ GBPUSD 0.00015.
 | swing | USDJPY | 41 / 20% / 0.58 / -13.8% | 26 / 23% / 0.52 / -9.1% |
 | swing | GBPUSD | 38 / 29% / 0.86 / -3.7% | 32 / 31% / 0.58 / -8.7% |
 
+### Zones with a memory (October 2026)
+
+Zones used to be rebuilt on every candle. Now they change only when a new swing confirms. Both
+versions were run on the same candles: Yahoo 5m (30 Jul or 16 Jul - 8 Oct 2026) and 4h
+(Dec 2023 or May 2024 - Oct 2026), with the presets and spreads above.
+
+| Mode | Market | Rebuilt every candle: trades / win % / PF / return / max DD | With memory |
+|---|---|---|---|
+| scalp | XAUUSD | 57 / 51% / 0.93 / -1.0% / -3.8% | 33 / 52% / 1.03 / +0.2% / -3.9% |
+| scalp | GBPJPY | 66 / 48% / 0.51 / -10.0% / -11.0% | 49 / 49% / 0.55 / -6.4% / -7.3% |
+| scalp | USDJPY | 63 / 57% / 0.92 / -1.2% / -4.4% | 34 / 53% / 0.90 / -0.8% / -4.6% |
+| scalp | GBPUSD | 135 / 48% / 0.44 / -23.8% / -24.6% | 66 / 50% / 0.38 / -14.1% / -15.0% |
+| swing | XAUUSD | 18 / 44% / 1.21 / +2.1% / -3.5% | 17 / 59% / 2.12 / +8.2% / -2.3% |
+| swing | GBPJPY | 25 / 28% / 0.76 / -3.2% / -7.4% | 25 / 40% / 1.38 / +4.0% / -5.3% |
+| swing | USDJPY | 23 / 17% / 0.34 / -11.9% / -14.2% | 20 / 35% / 0.91 / -1.1% / -6.5% |
+| swing | GBPUSD | 23 / 30% / 0.50 / -7.9% / -8.3% | 15 / 33% / 0.81 / -1.4% / -3.0% |
+
+- **Return:** better in all eight runs.
+- **Scalp:** about half as many trades, so it mostly loses less by trading less. Profit factor
+  is still below 1 on forex, and slightly lower than before on USDJPY and GBPUSD.
+- **Swing:** improved most, but these are 15-25 trades each.
+- **Caution:** on five simulated random-walk markets (`--source sim`, scalp), both versions ranged
+  from -4% to +9% (averages: +0.8% before, +2.3% with memory). Differences of that size appear even
+  where no edge can exist. The memory makes the zones steadier; the improvement is not proof of an edge.
+
 Read these honestly:
 - **Confirmation** filters out about half the trades and usually cuts losses. It does not
   create an edge.
@@ -347,6 +373,10 @@ python -m pytest
 ```
 
 `test_no_lookahead` checks that each decision at bar *t* (with and without a higher timeframe) is the same when all bars after *t* are removed.
+
+`tests/test_mt5_port.py` checks the MetaTrader 5 EA against the Python bot. It uses a run of the
+EA's own analysis recorded inside MT5, plus the EA's presets and fixed rules. See
+[`mql5/README.md`](mql5/README.md#check-that-it-matches-the-python-bot).
 
 ## Next steps
 
