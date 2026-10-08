@@ -62,7 +62,7 @@ input int      InpHTFHistoryBars  = 1000;           // Higher-timeframe candles 
 input group "Display"
 input bool     InpDraw            = true;           // Draw zones, trendlines, order blocks, swings
 input bool     InpPanel           = true;           // Show the analysis panel
-input bool     InpFullDetail      = false;          // Show full analysis (structure, patterns, order blocks, every row)
+input bool     InpFullDetail      = false;          // Show full analysis (patterns, swing labels, every fake break, every panel row)
 input bool     InpScreenshots     = true;           // Save a screenshot for every trade (MQL5/Files)
 
 input group "Alerts"
@@ -555,7 +555,6 @@ void Draw(const Signal &s, bool haveSignal)
          color clr = (k == 0) ? ink : htf;
          int width = (k == 0) ? 2 : 3;
          bool breakout = show && shown.setup == "breakout" && ln.broken == t && ln.kind == -shown.side;
-         if(!InpFullDetail && !breakout) continue;           // clean view: only the line a breakout setup trades
          if(ln.broken < 0)
            { Segment(nm, R[ln.i1].time, ln.p1, R[ln.i2].time, ln.p2, clr, width, STYLE_SOLID, true); continue; }
          double at = LineAt(ln, ln.broken);
@@ -615,7 +614,7 @@ void Draw(const Signal &s, bool haveSignal)
       Text(PFX + "candle", R[t].time, candleSide == 1 ? R[t].low : R[t].high, candleName, candleSide == 1 ? up : dn,
            candleSide == 1 ? ANCHOR_UPPER : ANCHOR_LOWER, 8);
 
-   for(int kind = -1; kind <= 1 && InpFullDetail; kind += 2)   // nearest active order block on each side
+   for(int kind = -1; kind <= 1; kind += 2)                   // nearest active order block on each side
      {
       int bestI = -1;
       double bestD = 0;
@@ -626,8 +625,12 @@ void Draw(const Signal &s, bool haveSignal)
          if(bestI < 0 || d < bestD) { bestI = i; bestD = d; }
         }
       if(bestI >= 0)
+        {
          Rect(PFX + "ob" + IntegerToString(kind + 1), R[OB[bestI].index].time, OB[bestI].lo, right, OB[bestI].hi,
               kind == 1 ? up : dn, false, 1);
+         Text(PFX + "ob" + IntegerToString(kind + 1) + "T", R[OB[bestI].index].time, kind == 1 ? OB[bestI].lo : OB[bestI].hi,
+              kind == 1 ? "BULL OB" : "BEAR OB", kind == 1 ? up : dn, kind == 1 ? ANCHOR_LEFT_UPPER : ANCHOR_LEFT_LOWER, 8);
+        }
      }
 
    double lastH = 0, lastL = 0;                            // swing labels HH / HL / LH / LL

@@ -66,7 +66,7 @@ def draw_entry(ax, market: Market, an: Analysis, last: int = 300, result: Backte
 
     By default only what is needed to trade: the zones to wait for (or the live setup's zone, entry,
     stop and target), the line a breakout setup trades, and a fake break against the trend.
-    `detail` adds the structure: every trendline, order blocks, chart and candle patterns, swing labels.
+    `detail` adds chart and candle patterns, swing labels and every fake break.
     """
     from matplotlib.patches import Rectangle
 
@@ -119,9 +119,6 @@ def draw_entry(ax, market: Market, an: Analysis, last: int = 300, result: Backte
         labels.add(htf_used.mid, f"ENTRY ZONE (HTF) {px(htf_used.low)}-{px(htf_used.high)}", HTF)
 
     for line in an.trendlines:
-        breakout = s is not None and s.setup == "breakout" and line.broken_at == an.bar
-        if not detail and not breakout:
-            continue                       # clean view: only the line a breakout setup trades
         if line.broken_at is not None and line.broken_at < start:
             continue   # broke before the visible window: nothing of it would be on screen
         colour, width = (HTF, 2.2) if line.htf else (LINE, 1.4)
@@ -148,7 +145,7 @@ def draw_entry(ax, market: Market, an: Analysis, last: int = 300, result: Backte
         state = "" if line.broken_at is None else " broken"
         labels.add(line.value_at(xs[-1]), f"{'HTF ' if line.htf else ''}TL x{len(line.touches)}{state}", colour)
 
-    for kind, colour in (("bullish", UP), ("bearish", DOWN)) if detail else ():
+    for kind, colour in (("bullish", UP), ("bearish", DOWN)):
         nearest = sorted((b for b in an.order_blocks if b.kind == kind),
                          key=lambda b: abs((b.low + b.high) / 2 - an.price))[:1]
         for ob in nearest:

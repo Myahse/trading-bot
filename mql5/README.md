@@ -33,7 +33,8 @@ It runs inside MT5 on a chart and places the trades itself.
      R:R) or ENTER (the live order); a WARNING after a fake break against the trend; STATUS only
      when something blocks trading.
    - **Chart:** the zones to wait for (2 on Scalp, 1 on Swing), or the live setup's zone with ENTER
-     HERE, SL and TP; the trendline a breakout trades; a fake break against the trend.
+     HERE, SL and TP; the trendlines (purple for the higher timeframe) with their breaks; the
+     nearest order block on each side (BULL OB / BEAR OB); a fake break against the trend.
 
    Set *Show full analysis* to `true` for everything below, every panel row included.
 
