@@ -90,6 +90,8 @@ def _parser() -> argparse.ArgumentParser:
 
     g = p.add_argument_group("output")
     g.add_argument("--plot", help="save a chart to this .png")
+    g.add_argument("--detail", action="store_true",
+                   help="charts: draw the full analysis (trendlines, order blocks, patterns, swings), not just what to trade")
     g.add_argument("--bars", type=int, default=300, help="bars shown on the chart")
     g.add_argument("--trades", help="save trades to this .csv")
     g.add_argument("--screenshot", metavar="DIR", help="analyze: save technical + fundamental screenshots here")
@@ -530,7 +532,7 @@ def main(argv: list[str] | None = None) -> None:
             print("screenshots -> " + ", ".join(str(Path(args.screenshot) / n) for _, n in shots))
     if args.plot:
         from .plot import plot
-        plot(market, args.plot, result, last=args.bars)
+        plot(market, args.plot, result, last=args.bars, detail=args.detail)
         print(f"chart -> {args.plot}")
 
 

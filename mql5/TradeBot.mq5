@@ -62,6 +62,7 @@ input int      InpHTFHistoryBars  = 1000;           // Higher-timeframe candles 
 input group "Display"
 input bool     InpDraw            = true;           // Draw zones, trendlines, order blocks, swings
 input bool     InpPanel           = true;           // Show the analysis panel
+input bool     InpFullDetail      = false;          // Show full analysis (structure, patterns, order blocks, every row)
 input bool     InpScreenshots     = true;           // Save a screenshot for every trade (MQL5/Files)
 
 input group "Alerts"
@@ -514,6 +515,7 @@ void Draw(const Signal &s, bool haveSignal)
      {
       ZPlan p = plans[i];
       if(C.zoneBest ? i != best : !PlanShown(plans, i, R[t].close, A[t])) continue;
+      if(show && !InpFullDetail) continue;                 // clean view: a live setup shows only its own zone
       if(show && ((p.lo == shown.zoneLo && p.hi == shown.zoneHi) || (p.lo == shown.htfLo && p.hi == shown.htfHi))) continue;
       string nm = PFX + "pz" + IntegerToString(i);
       color clr = (p.side == 1) ? up : dn;
@@ -553,6 +555,7 @@ void Draw(const Signal &s, bool haveSignal)
          color clr = (k == 0) ? ink : htf;
          int width = (k == 0) ? 2 : 3;
          bool breakout = show && shown.setup == "breakout" && ln.broken == t && ln.kind == -shown.side;
+         if(!InpFullDetail && !breakout) continue;           // clean view: only the line a breakout setup trades
          if(ln.broken < 0)
            { Segment(nm, R[ln.i1].time, ln.p1, R[ln.i2].time, ln.p2, clr, width, STYLE_SOLID, true); continue; }
          double at = LineAt(ln, ln.broken);
@@ -574,7 +577,7 @@ void Draw(const Signal &s, bool haveSignal)
      }
 
    // chart patterns: their swings joined, the neckline dashed, the name; the candlestick pattern under/over its candle
-   for(int i = 0; i < ArraySize(PAT); i++)
+   for(int i = 0; i < ArraySize(PAT) && InpFullDetail; i++)
      {
       CPattern pt = PAT[i];
       if(pt.pi[0] < N - 200) continue;
@@ -594,6 +597,7 @@ void Draw(const Signal &s, bool haveSignal)
    for(int i = 0; i < ArraySize(FB); i++)                  // fake breaks: where price came back through the level
      {
       if(FB[i].back < N - 200) continue;
+      if(!InpFullDetail && i != FakeWarning((NH > 0) ? biasH : biasE)) continue;   // clean view: only the warning
       color fc = C'230,140,20';
       string nm = PFX + "fake" + IntegerToString(i);
       Segment(nm + "l", R[FB[i].broke].time, FB[i].level, R[FB[i].back].time, FB[i].level, fc, 2, STYLE_SOLID, false);
@@ -607,11 +611,11 @@ void Draw(const Signal &s, bool haveSignal)
            FB[i].side == 1 ? ANCHOR_LEFT_UPPER : ANCHOR_LEFT_LOWER, 9, "Arial Bold");
      }
 
-   if(candleSide != 0)
+   if(candleSide != 0 && InpFullDetail)
       Text(PFX + "candle", R[t].time, candleSide == 1 ? R[t].low : R[t].high, candleName, candleSide == 1 ? up : dn,
            candleSide == 1 ? ANCHOR_UPPER : ANCHOR_LOWER, 8);
 
-   for(int kind = -1; kind <= 1; kind += 2)                // nearest active order block on each side
+   for(int kind = -1; kind <= 1 && InpFullDetail; kind += 2)   // nearest active order block on each side
      {
       int bestI = -1;
       double bestD = 0;
@@ -628,7 +632,7 @@ void Draw(const Signal &s, bool haveSignal)
 
    double lastH = 0, lastL = 0;                            // swing labels HH / HL / LH / LL
    bool haveH = false, haveL = false;
-   for(int i = 0; i < NP; i++)
+   for(int i = 0; i < NP && InpFullDetail; i++)
      {
       bool isHigh = P[i].kind == 1;
       string tag = "";
@@ -841,7 +845,71 @@ void CheckAlerts(const Signal &s, bool haveSignal)
 
 // The analysis panel, top left on a white box: trend, where price is, the setup, the zones and
 // the two scenarios. Green is for buying, red for selling.
+// A fresh fake break that goes against the trade direction (the buyers trapped in an uptrend, or the
+// sellers in a downtrend): the only one worth a warning. -1 if none.
+int FakeWarning(int dir)
+  {
+   int t = N - 1;
+   for(int i = 0; i < ArraySize(FB); i++)
+      if(t - FB[i].back < 2 * FAKE_BARS && (dir == 0 || FB[i].side == -dir)) return i;
+   return -1;
+  }
+
+// The panel: only what is needed to trade - the direction, the plan, a live setup, a warning and
+// anything blocking trading. "Show full analysis" gives every row (PanelFull).
 void Panel(const Signal &s, bool haveSignal, string status)
+  {
+   if(InpFullDetail) { PanelFull(s, haveSignal, status); return; }
+   Comment("");
+   if(!InpPanel) return;
+   int t = N - 1;
+   color up = C'42,157,143', dn = C'231,111,81', ink = C'38,70,83', warn = C'230,140,20';
+   string tfH = StringSubstr(EnumToString(NH > 0 ? C.htf : Period()), 7);
+   ArrayResize(pnHead, 0); ArrayResize(pnText, 0); ArrayResize(pnColor, 0); ArrayResize(pnBold, 0);
+   PanelRow("", "TradeBot  " + _Symbol + (C.zoneBest ? "  Swing" : "  Scalp"), ink, true);
+
+   int dir = (NH > 0) ? biasH : biasE;
+   PanelRow("TREND", dir == 1 ? tfH + " up - buys only" : (dir == -1 ? tfH + " down - sells only" : "no trend - no trade"),
+            dir == 1 ? up : (dir == -1 ? dn : ink));
+
+   if(haveSignal || armed)
+     {
+      Signal g = armed ? armedSig : s;
+      PanelRow("ENTER", StringFormat("%s STOP %s,  SL %s,  TP %s,  R:R %.1f%s", g.side == 1 ? "BUY" : "SELL",
+                                     PS(g.trigger > 0 ? g.trigger : g.entry), PS(g.stop), PS(g.target), g.rr,
+                                     armed ? StringFormat("  (%d candles left)", armedBarsLeft) : ""), g.side == 1 ? up : dn, true);
+     }
+   else
+     {
+      ZPlan plans[];
+      PlanZones(plans);
+      int best = BestPlan(plans);
+      if(dir != 0 && best >= 0)
+        {
+         ZPlan b = plans[best];
+         PanelRow("PLAN", StringFormat("%s at %s-%s after a rejection candle.  SL %s,  TP %s  (R:R %.1f)", b.side == 1 ? "Buy" : "Sell",
+                                       PS(b.lo), PS(b.hi), PS(b.stop), PS(b.target), b.rr), b.side == 1 ? up : dn);
+        }
+      else
+         PanelRow("PLAN", dir == 0 ? "no trade - wait for a trend" : "no trade now - wait for a zone", ink);
+     }
+
+   if(FakeWarning(dir) >= 0)
+     {
+      FBreak f = FB[FakeWarning(dir)];
+      PanelRow("WARNING", StringFormat("%s at %s: the %s got trapped - careful with %s", FakeLabel(f), PS(f.level),
+                                       f.side == 1 ? "sellers" : "buyers", f.side == 1 ? "sells" : "buys"), warn);
+     }
+
+   if(status != "trading" && status != "preview" && status != "waiting for confirmation")
+      PanelRow("STATUS", status, ink);
+   else if(lastNote != "" && StringFind(lastNote, "skipped") >= 0)
+      PanelRow("STATUS", lastNote, ink);
+   PanelDraw();
+   ChartRedraw(0);
+  }
+
+void PanelFull(const Signal &s, bool haveSignal, string status)
   {
    Comment("");
    if(!InpPanel) return;

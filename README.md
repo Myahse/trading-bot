@@ -257,7 +257,9 @@ folder set to `trading-bot`: weekly on Sunday, and daily Sunday to Thursday.
 
 ## Clean chart
 
-`--plot chart.png` draws only what matters at the latest bar:
+`--plot chart.png` draws only what you need to trade: the zones to wait for, or the live setup
+(ENTRY ZONE, ENTER HERE, SL, TP), the trendline a breakout trades, a fake break against the trend,
+and the main scenario as the title. Add `--detail` for the full analysis below. The full chart draws:
 - **the zones it could trade from**, each with its plan (`BUY ZONE 4,134.20-4,136.20  TP 4,146.50  R:R 2.8`):
   - scalp: the 2 tradable zones nearest to price (zones far away are not actionable yet)
   - swing: only the best entry zone, with its SL and TP

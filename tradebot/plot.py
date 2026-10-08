@@ -61,8 +61,13 @@ class Labels:
 
 
 def draw_entry(ax, market: Market, an: Analysis, last: int = 300, result: BacktestResult | None = None,
-               show_swings: bool = True) -> None:
-    """The entry-timeframe chart with the analysis drawn on it."""
+               show_swings: bool = True, detail: bool = False) -> None:
+    """The entry-timeframe chart with the analysis drawn on it.
+
+    By default only what is needed to trade: the zones to wait for (or the live setup's zone, entry,
+    stop and target), the line a breakout setup trades, and a fake break against the trend.
+    `detail` adds the structure: every trendline, order blocks, chart and candle patterns, swing labels.
+    """
     from matplotlib.patches import Rectangle
 
     n = an.bar + 1
@@ -89,7 +94,7 @@ def draw_entry(ax, market: Market, an: Analysis, last: int = 300, result: Backte
     used = s.zone if s is not None else None
     htf_used = s.htf_zone if s is not None else None
     for p in plans:
-        if p.zone in (used, htf_used):
+        if p.zone in (used, htf_used) or (s is not None and not detail):   # a live setup shows only its own zone
             continue
         colour = UP if p.side == "long" else DOWN
         width = right - start + 1
@@ -114,6 +119,9 @@ def draw_entry(ax, market: Market, an: Analysis, last: int = 300, result: Backte
         labels.add(htf_used.mid, f"ENTRY ZONE (HTF) {px(htf_used.low)}-{px(htf_used.high)}", HTF)
 
     for line in an.trendlines:
+        breakout = s is not None and s.setup == "breakout" and line.broken_at == an.bar
+        if not detail and not breakout:
+            continue                       # clean view: only the line a breakout setup trades
         if line.broken_at is not None and line.broken_at < start:
             continue   # broke before the visible window: nothing of it would be on screen
         colour, width = (HTF, 2.2) if line.htf else (LINE, 1.4)
@@ -140,7 +148,7 @@ def draw_entry(ax, market: Market, an: Analysis, last: int = 300, result: Backte
         state = "" if line.broken_at is None else " broken"
         labels.add(line.value_at(xs[-1]), f"{'HTF ' if line.htf else ''}TL x{len(line.touches)}{state}", colour)
 
-    for kind, colour in (("bullish", UP), ("bearish", DOWN)):
+    for kind, colour in (("bullish", UP), ("bearish", DOWN)) if detail else ():
         nearest = sorted((b for b in an.order_blocks if b.kind == kind),
                          key=lambda b: abs((b.low + b.high) / 2 - an.price))[:1]
         for ob in nearest:
@@ -150,7 +158,7 @@ def draw_entry(ax, market: Market, an: Analysis, last: int = 300, result: Backte
             labels.add((ob.low + ob.high) / 2, f"{kind} OB", colour)
 
     # chart patterns: their swings joined, the neckline dashed, the name; the candlestick pattern under/over its candle
-    for pat in an.patterns:
+    for pat in an.patterns if detail else []:
         if pat.points[0][0] < start:
             continue
         colour = UP if pat.side == "long" else DOWN
@@ -164,21 +172,23 @@ def draw_entry(ax, market: Market, an: Analysis, last: int = 300, result: Backte
                     ha="center", va="bottom" if pat.side == "short" else "top", fontsize=8, fontweight="bold",
                     color=colour, zorder=7)
     for fb in an.fake_breaks:      # where price came back through the level: the break failed
-        if fb.back_at < start:
-            continue
+        warns = an.bar - fb.back_at < 2 * market.cfg.fake_bars and fb.side != {"up": "long", "down": "short"}.get(
+            an.direction, "")
+        if fb.back_at < start or not (detail or warns):
+            continue                       # clean view: only a fresh fake break against the trend
         ax.plot([fb.broke_at, fb.back_at], [fb.level, fb.level], color=FAKE, linewidth=2, zorder=6)
         ax.scatter(fb.back_at, fb.level, marker="X", s=70, color=FAKE, zorder=7)
         ax.annotate("FAKE BREAK " + ("\u25b2" if fb.side == "long" else "\u25bc"), (fb.back_at, fb.level),
                     xytext=(6, -10 if fb.side == "long" else 10), textcoords="offset points", ha="left",
                     va="top" if fb.side == "long" else "bottom", fontsize=9, fontweight="bold", color=FAKE, zorder=7)
-    if an.candle:
+    if an.candle and detail:
         name, side = an.candle
         y = market.l[an.bar] if side == "long" else market.h[an.bar]
         ax.annotate(name, (an.bar, y), xytext=(0, -16 if side == "long" else 16), textcoords="offset points",
                     ha="center", va="top" if side == "long" else "bottom", fontsize=8, fontstyle="italic",
                     color=UP if side == "long" else DOWN, zorder=7)
 
-    if show_swings:
+    if show_swings and detail:
         for p, tag in swing_labels([p for p in market.pivots_known_at(an.bar) if p.index >= start]):
             above = p.kind == "high"
             ax.annotate(tag, (p.index, p.price), xytext=(0, 7 if above else -7), textcoords="offset points",
@@ -223,17 +233,17 @@ def draw_entry(ax, market: Market, an: Analysis, last: int = 300, result: Backte
     ax.set_facecolor(SURFACE)
 
 
-def plot(market: Market, path: str, result: BacktestResult | None = None, last: int = 300) -> None:
+def plot(market: Market, path: str, result: BacktestResult | None = None, last: int = 300, detail: bool = False) -> None:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     an = market.analyze(len(market.c) - 1)
     fig, ax = plt.subplots(figsize=(15, 7))
-    draw_entry(ax, market, an, last, result)
+    draw_entry(ax, market, an, last, result, detail=detail)
     htf = {"1h": "H1", "4h": "H4", "D": "D1", "W": "W1"}.get(str(market.cfg.htf), "HTF")
     main, alt = scenarios(an, plan_zones(market, an), htf)
-    ax.set_title(f"Main: {main}\nAlternative: {alt}", fontsize=10, loc="left")
+    ax.set_title(f"{main}\nAlternative: {alt}" if detail else main, fontsize=10, loc="left")
     fig.tight_layout()
     fig.savefig(path, dpi=120)
     plt.close(fig)

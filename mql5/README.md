@@ -28,7 +28,16 @@ It runs inside MT5 on a chart and places the trades itself.
 2. Open a chart: **M5** for the Scalp preset, **H4** for the Swing preset.
 3. Drag **TradeBot** onto the chart. In **Common**, tick *Allow Algo Trading*. In **Inputs**, choose the
    preset and your risk.
-4. The chart shows:
+4. By default the chart and panel show only what is needed to trade:
+   - **Panel:** TREND (buys only / sells only / no trade); PLAN (the zone to wait for, with SL, TP and
+     R:R) or ENTER (the live order); a WARNING after a fake break against the trend; STATUS only
+     when something blocks trading.
+   - **Chart:** the zones to wait for (2 on Scalp, 1 on Swing), or the live setup's zone with ENTER
+     HERE, SL and TP; the trendline a breakout trades; a fake break against the trend.
+
+   Set *Show full analysis* to `true` for everything below, every panel row included.
+
+   The full chart shows:
    - the zones it could trade from, each with its plan: `BUY ZONE 4134.20-4136.20  TP 4146.50  R:R 2.7`.
      Scalp shows the 2 tradable zones nearest to price; Swing shows only the best one, with its SL and TP lines. A
      thicker outline means the zone sits on a higher-timeframe zone (`+ HTF`). Zones it would not
