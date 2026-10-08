@@ -33,6 +33,7 @@ input int      InpCooldownBars    = 6;              // Bars to stand aside after
 input double   InpMinStopATR      = 1.0;            // Minimum stop distance in ATR
 input int      InpOBMaxAge        = 100;            // Bars an order block stays valid
 input int      InpZoneLookback    = 30;             // Recent swings used to build zones
+input bool     InpZoneBest        = false;          // Chart: only the best zone (true) or every tradable zone
 
 input group "Money management (Custom preset)"
 input double   InpRiskPct         = 0.5;            // Risk per trade, % of balance
@@ -126,7 +127,7 @@ void LoadConfig()
    C.minStopATR = InpMinStopATR; C.trendFilter = InpTrendFilter; C.breakouts = InpBreakouts;
    C.riskPct = InpRiskPct; C.minLotMaxRisk = InpMinLotMaxRisk; C.beR = InpBreakevenR; C.partialR = InpPartialR;
    C.partialPct = InpPartialPct; C.trail = (int)InpTrail; C.trailStartR = InpTrailStartR; C.trailATR = InpTrailATR;
-   C.maxDailyLoss = InpMaxDailyLossPct; C.maxTradesDay = InpMaxTradesDay;
+   C.maxDailyLoss = InpMaxDailyLossPct; C.maxTradesDay = InpMaxTradesDay; C.zoneBest = InpZoneBest;
 
    ApplyPreset((int)InpPreset);   // Scalp/Swing overwrite the inputs
    gHistoryBars = InpHistoryBars;
@@ -485,16 +486,37 @@ void Draw(const Signal &s, bool haveSignal)
    bool show = haveSignal;
    if(armed) { shown = armedSig; show = true; }
 
-   // zones: with a setup on, the one it came off is drawn strong and the others faded
-   color supFill = show ? C'230,243,241' : C'200,232,228', resFill = show ? C'252,238,233' : C'250,218,208';
-   for(int i = 0; i < MathMin(2, ArraySize(ZS)); i++)
-      if(!(show && ZS[i].lo == shown.zoneLo && ZS[i].hi == shown.zoneHi))
-         Rect(PFX + "zs" + IntegerToString(i), left, ZS[i].lo, right, ZS[i].hi, supFill, true, 1);
-   for(int i = 0; i < MathMin(2, ArraySize(ZR)); i++)
-      if(!(show && ZR[i].lo == shown.zoneLo && ZR[i].hi == shown.zoneHi))
-         Rect(PFX + "zr" + IntegerToString(i), left, ZR[i].lo, right, ZR[i].hi, resFill, true, 1);
-   if(ArraySize(HZS) > 0 && !(show && HZS[0].lo == shown.htfLo)) Rect(PFX + "hzs", left, HZS[0].lo, right, HZS[0].hi, htf, false, show ? 1 : 2);
-   if(ArraySize(HZR) > 0 && !(show && HZR[0].lo == shown.htfLo)) Rect(PFX + "hzr", left, HZR[0].lo, right, HZR[0].hi, htf, false, show ? 1 : 2);
+   // zones: every one the bot could trade from, with its plan (scalp), or only the best one (swing).
+   // With a setup on, the zone it came off is drawn strong and the others faded.
+   ZPlan plans[];
+   PlanZones(plans);
+   int best = BestPlan(plans);
+   datetime planLabelAt = R[t].time + 2 * sec;
+   for(int i = 0; i < ArraySize(plans); i++)
+     {
+      ZPlan p = plans[i];
+      if(C.zoneBest && i != best) continue;
+      if(show && ((p.lo == shown.zoneLo && p.hi == shown.zoneHi) || (p.lo == shown.htfLo && p.hi == shown.htfHi))) continue;
+      string nm = PFX + "pz" + IntegerToString(i);
+      if(!p.tradable)
+        {
+         Rect(nm, left, p.lo, right, p.hi, p.side == 1 ? C'240,247,246' : C'253,243,240', true, 1);
+         if(StringFind(p.why, "against") < 0)       // against-trend zones need no label: the panel says the trend
+            Text(nm + "T", planLabelAt, (p.lo + p.hi) / 2, PS((p.lo + p.hi) / 2) + " - " + p.why, clrGray, ANCHOR_LEFT);
+         continue;
+        }
+      color clr = (p.side == 1) ? up : dn;
+      Rect(nm, left, p.lo, right, p.hi, show ? (p.side == 1 ? C'230,243,241' : C'252,238,233') : (p.side == 1 ? C'190,226,221' : C'248,208,196'), true, 1);
+      if(!show) Rect(nm + "b", left, p.lo, right, p.hi, clr, false, (p.htf || p.backed) ? 2 : 1);
+      Text(nm + "T", planLabelAt, (p.lo + p.hi) / 2, StringFormat("%s  TP %s  R:R %.1f", PlanLabel(p), PS(p.target), p.rr), clr, ANCHOR_LEFT, 8);
+      if(C.zoneBest && !show)                       // the one plan: its stop and target too
+        {
+         Segment(nm + "sl", R[t].time, p.stop, right, p.stop, dn, 1, STYLE_DASH, false);
+         Segment(nm + "tp", R[t].time, p.target, right, p.target, up, 1, STYLE_DASH, false);
+         Text(nm + "slT", right, p.stop, "SL " + PS(p.stop), dn, ANCHOR_LEFT);
+         Text(nm + "tpT", right, p.target, "TP " + PS(p.target), up, ANCHOR_LEFT);
+        }
+     }
    datetime zoneLabelAt = R[MathMax(0, t - 60)].time;      // zone labels sit just left of the recent candles
    if(show && shown.zoneHi > 0)
      {
@@ -602,6 +624,18 @@ void Panel(const Signal &s, bool haveSignal, string status)
       txt += StringFormat("6. Waiting for confirmation at %s (%d candles left)\n", PS(armedSig.trigger), armedBarsLeft);
    else
       txt += "6. Setup: none\n";
+   ZPlan plans[];
+   PlanZones(plans);
+   int best = BestPlan(plans), nt = 0;
+   for(int i = 0; i < ArraySize(plans); i++) if(plans[i].tradable) nt++;
+   if(C.zoneBest)
+      txt += "7. Entry zone: " + (best >= 0 ? StringFormat("%s, SL %s, TP %s, R:R %.1f", PlanLabel(plans[best]), PS(plans[best].stop),
+                                                           PS(plans[best].target), plans[best].rr) : "none near price") + "\n";
+   else
+      txt += StringFormat("7. Tradable zones: %d%s\n", nt, best >= 0 ? " (best: " + PlanLabel(plans[best]) + ")" : "");
+   string mainS, altS;
+   Scenarios(plans, NH > 0 ? StringSubstr(EnumToString(C.htf), 7) : StringSubstr(EnumToString(Period()), 7), mainS, altS);
+   txt += "Main: " + mainS + "\nAlternative: " + altS + "\n";
    txt += "Status: " + status + (lastNote != "" ? "\nLast note: " + lastNote : "");
    Comment(txt);
   }

@@ -64,6 +64,7 @@ class StrategyConfig:
                                         # "close": enter after a candle closes beyond it
                                         # "none": enter at the next open
     confirm_bars: int = 3               # bars the confirmation may take before the setup is cancelled
+    zone_view: str = "all"              # charts: "all" tradable zones with their plans, or the "best" one
 
 
 MODES: dict[str, dict] = {
@@ -71,7 +72,7 @@ MODES: dict[str, dict] = {
     "scalp": dict(interval="5m", count=20_000, period="60d",
                   config=dict(htf="1h", pivot_left=3, pivot_right=3, htf_pivot=3, zone_lookback_pivots=30,
                               ob_max_age=100, min_rr=1.5, default_rr=1.5, retest_window=12, cooldown_bars=6,
-                              min_stop_atr=1.0, confirmation="break", confirm_bars=3),
+                              min_stop_atr=1.0, confirmation="break", confirm_bars=3, zone_view="all"),
                   money=dict(risk_per_trade=0.005, breakeven_r=1.0, partial_r=1.0, partial_pct=0.5,
                              trail="atr", trail_start_r=1.0, trail_atr=1.5, max_daily_loss=0.03,
                              max_trades_per_day=8)),
@@ -79,7 +80,7 @@ MODES: dict[str, dict] = {
     "swing": dict(interval="4h", count=5_000, period="730d",
                   config=dict(htf="D", pivot_left=5, pivot_right=5, htf_pivot=3, zone_lookback_pivots=40,
                               ob_max_age=150, min_rr=2.0, default_rr=2.5, retest_window=15, cooldown_bars=3,
-                              confirmation="break", confirm_bars=2),
+                              confirmation="break", confirm_bars=2, zone_view="best"),
                   money=dict(risk_per_trade=0.01, breakeven_r=1.0, partial_r=1.5, partial_pct=0.5,
                              trail="swing", trail_start_r=1.5, max_daily_loss=None)),
 }

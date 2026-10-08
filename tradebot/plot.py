@@ -13,6 +13,7 @@ import numpy as np
 from .backtest import BacktestResult
 from .strategy import Analysis, Market
 from .structure import Pivot, px
+from .zoneplan import best_plan, plan_zones, scenarios
 
 UP, DOWN, LINE, HTF = "#2a9d8f", "#e76f51", "#264653", "#6d597a"
 INK, MUTED, SURFACE = "#0b0b0b", "#52514e", "#fcfcfb"
@@ -74,24 +75,41 @@ def draw_entry(ax, market: Market, an: Analysis, last: int = 300, result: Backte
     s = an.signal
     if s is not None:   # make sure the whole trade plan is on screen
         lo, hi = min(lo, s.stop, s.target), max(hi, s.stop, s.target)
+    plans = plan_zones(market, an)
+    if market.cfg.zone_view == "best":
+        plans = [p for p in [best_plan(plans)] if p is not None]
+    for p in plans:     # and every zone it could trade from
+        if p.tradable:
+            lo, hi = min(lo, p.zone.low), max(hi, p.zone.high)
+        if market.cfg.zone_view == "best" and s is None:
+            lo, hi = min(lo, p.stop, p.target), max(hi, p.stop, p.target)
     pad = (hi - lo) * 0.05
 
+    # Zones: every one the bot could trade from with its plan (scalp), or only the best one (swing).
     # With a setup on, the zone it came off is the one that matters: drawn strong, the others faded.
     used = s.zone if s is not None else None
     htf_used = s.htf_zone if s is not None else None
-    for zones, colour in ((an.support[:2], UP), (an.resistance[:2], DOWN)):
-        for z in zones:
-            if z == used:
-                continue
-            ax.add_patch(Rectangle((start - 1, z.low), right - start + 1, z.high - z.low, facecolor=colour,
-                                   alpha=0.06 if s is not None else 0.13, linewidth=0, zorder=1))
-            labels.add(z.mid, f"{px(z.mid)} zone x{z.touches}", colour)
-    for z in an.htf_support[:1] + an.htf_resistance[:1]:
-        if z == htf_used:
+    for p in plans:
+        if p.zone in (used, htf_used):
             continue
-        ax.add_patch(Rectangle((start - 1, z.low), right - start + 1, z.high - z.low, facecolor="none",
-                               edgecolor=HTF, linewidth=1.5, alpha=0.5 if s is not None else 1.0, zorder=1))
-        labels.add(z.mid, f"HTF zone {px(z.mid)}", HTF)
+        colour = UP if p.side == "long" else DOWN
+        width = right - start + 1
+        if not p.tradable:
+            ax.add_patch(Rectangle((start - 1, p.zone.low), width, p.zone.high - p.zone.low, facecolor=colour,
+                                   alpha=0.05, linewidth=0, zorder=1))
+            if not p.why_not.startswith("against"):   # against-trend zones need no label: the title says the trend
+                labels.add(p.zone.mid, f"{px(p.zone.mid)} - {p.why_not}", MUTED)
+            continue
+        strong = s is None
+        ax.add_patch(Rectangle((start - 1, p.zone.low), width, p.zone.high - p.zone.low, facecolor=colour,
+                               alpha=0.22 if strong else 0.08, edgecolor=colour if strong else "none",
+                               linewidth=1.2 if p.htf_backed or p.htf else 0.6, zorder=1))
+        short = p.label.replace(" ZONE", "")      # "BUY + HTF 4,129.93-4,132.90": the label column is narrow
+        labels.add(p.zone.mid, f"{short}  R:R {p.rr:.1f}", colour)
+        if market.cfg.zone_view == "best" and s is None:   # the one plan: its stop and target too
+            for level, text, c in ((p.stop, f"SL {px(p.stop)}", DOWN), (p.target, f"TP {px(p.target)}", UP)):
+                ax.hlines(level, n, right, colors=c, linestyles=(0, (4, 3)), linewidth=1.2, zorder=4)
+                labels.add(level, text, c)
     if used is not None:
         colour = UP if s.side == "long" else DOWN
         ax.add_patch(Rectangle((start - 1, used.low), right - start + 1, used.high - used.low, facecolor=colour,
@@ -171,7 +189,7 @@ def draw_entry(ax, market: Market, an: Analysis, last: int = 300, result: Backte
 
     labels.draw(ax, right + 2, lo - pad, hi + pad)
     ax.set_ylim(lo - pad, hi + pad)   # levels far from the visible price are not worth zooming out for
-    ax.set_xlim(start - 1, right + max(20, (n - start) // 5))   # room for the labels
+    ax.set_xlim(start - 1, right + max(24, (n - start) // 4))   # room for the labels
     ax.grid(alpha=0.15)
     ax.set_facecolor(SURFACE)
 
@@ -184,9 +202,9 @@ def plot(market: Market, path: str, result: BacktestResult | None = None, last: 
     an = market.analyze(len(market.c) - 1)
     fig, ax = plt.subplots(figsize=(15, 7))
     draw_entry(ax, market, an, last, result)
-    trend = f"entry bias {an.bias}" + (f", HTF bias {an.htf_bias}" if an.htf_bias else "")
-    ax.set_title(f"{trend}   |   shaded: zones   outlined: HTF zones   TL: trendline (o = touch, "
-                 f"dotted after break)   hatched: order block", fontsize=10)
+    htf = {"1h": "H1", "4h": "H4", "D": "D1", "W": "W1"}.get(str(market.cfg.htf), "HTF")
+    main, alt = scenarios(an, plan_zones(market, an), htf)
+    ax.set_title(f"Main: {main}\nAlternative: {alt}", fontsize=10, loc="left")
     fig.tight_layout()
     fig.savefig(path, dpi=120)
     plt.close(fig)

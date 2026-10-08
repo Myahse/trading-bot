@@ -255,13 +255,22 @@ folder set to `trading-bot`: weekly on Sunday, and daily Sunday to Thursday.
 ## Clean chart
 
 `--plot chart.png` draws only what matters at the latest bar:
-- the 2 nearest zones on each side of price
-- the nearest higher-timeframe zone on each side (outlined)
+- **the zones it could trade from**, each with its plan (`BUY ZONE 4,134.20-4,136.20  TP 4,146.50  R:R 2.8`):
+  - scalp: every tradable zone
+  - swing: only the best entry zone, with its SL and TP
+  - a zone is tradable when it goes with the higher-timeframe trend and pays the minimum R:R.
+    `+ HTF` means it sits on a higher-timeframe zone (the best is the nearest such zone).
+  - zones it would not trade are faded; those failing on R:R say so
+- **two scenarios** in the title: the main one (e.g. *H1 uptrend: expect a pullback into the buy
+  zone ..., a rejection there, then a move to ... The plan fails on a close below ...*) and the alternative
 - the order block closest to price on each side
 - the trades
 - for a setup:
   - the zone it came off, filled strong and labelled **ENTRY ZONE** with its edges (the other zones fade)
   - an arrow labelled **ENTER HERE** pointing at the buy-stop or sell-stop level
+
+The technical screenshots list the same zones and scenarios in their "How the bot read it" panel.
+`tradebot/zoneplan.py` builds them.
 
 Trendlines show:
 - every swing point that touches them (o)

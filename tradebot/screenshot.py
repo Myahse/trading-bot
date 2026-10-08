@@ -185,6 +185,22 @@ def analysis_steps(market: Market, an: Analysis, entry_tf: str, htf_tf: str,
     steps.append((DOT, f"Order blocks: {len(an.order_blocks)} active",
                   "; ".join(f"{b.kind} {px(b.low)}-{px(b.high)}" for b in obs) + "." if obs else "None active."))
 
+    from .zoneplan import best_plan, plan_zones, scenarios
+    plans = plan_zones(market, an)
+    tradable = [p for p in plans if p.tradable]
+    best = best_plan(plans)
+    if market.cfg.zone_view == "best":
+        steps.append((OK if best else NO, "Entry zone: " + (best.label if best else "none"),
+                      f"stop {px(best.stop)}, target {px(best.target)}, R:R {best.rr:.1f}. Wait for a rejection "
+                      "candle there." if best else "No zone near price goes with the trend and pays enough."))
+    else:
+        steps.append((OK if tradable else NO, f"Tradable zones: {len(tradable)}",
+                      "; ".join(f"{p.label} (R:R {p.rr:.1f})" for p in tradable[:4]) + "." if tradable else
+                      "No zone near price goes with the trend and pays enough."))
+    main, alt = scenarios(an, plans, htf_tf)
+    steps.append((DOT, "Main scenario", main))
+    steps.append((DOT, "Alternative", alt))
+
     s = an.signal
     if s is not None:
         trig = {"break": f"enter only if price breaks {px(s.trigger)} within {market.cfg.confirm_bars} candles",

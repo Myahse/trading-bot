@@ -29,8 +29,10 @@ It runs inside MT5 on a chart and places the trades itself.
 3. Drag **TradeBot** onto the chart. In **Common**, tick *Allow Algo Trading*. In **Inputs**, choose the
    preset and your risk.
 4. The chart shows:
-   - the 2 nearest zones on each side
-   - the nearest higher-timeframe zones (purple outline)
+   - the zones it could trade from, each with its plan: `BUY ZONE 4134.20-4136.20  TP 4146.50  R:R 2.7`.
+     Scalp shows every tradable zone; Swing shows only the best one, with its SL and TP lines. A
+     thicker outline means the zone sits on a higher-timeframe zone (`+ HTF`). Zones it would not
+     trade are faded: against the higher-timeframe trend, or labelled with their too-low R:R
    - trendlines: thick purple for the higher timeframe, dotted after a break
    - the nearest order blocks
    - swing labels (HH / HL / LH / LL)
@@ -40,7 +42,13 @@ It runs inside MT5 on a chart and places the trades itself.
        higher-timeframe zone, if one was tagged too), and the other zones fade
      - an arrow on the next candle points at the order level, labelled **ENTER HERE: BUY STOP**
        (or SELL STOP) and the price
-5. The top-left panel shows how the bot reads the market, step by step, and what it is waiting for.
+5. The top-left panel shows how the bot reads the market, step by step, and what it is waiting for:
+   the trend on both timeframes, the tradable zones (or the entry zone on Swing), and two scenarios:
+   - **Main:** e.g. *H1 uptrend: expect a pullback into the buy zone 4129.93-4132.90, a rejection
+     there, then a move to 4146.50. The plan fails on a close below 4128.79.*
+   - **Alternative:** what happens if that level breaks, and the next zone to watch.
+
+   These are levels to watch, not orders: an entry still needs the rejection candle and its confirmation.
 
 On a **real** account it only analyses and never sends an order, unless you set *Allow trading a
 REAL account* to `true`. Keep it on demo until weeks of results justify more.
@@ -50,7 +58,8 @@ REAL account* to `true`. Keep it on demo until weeks of results justify more.
 `TradeBotParity.mq5` runs the EA's own analysis (`TradeBotCore.mqh`) on every closed candle of a
 chart. It writes what it sees to `MQL5/Files/TradeBot_parity_<symbol>_<tf>.csv`, and the candles it
 used to `..._candles.csv`. The Python bot then analyses the same candles and compares, column by column:
-the ATR, swings, trend, nearest zones on both timeframes, trendlines, order blocks and every setup.
+the ATR, swings, trend, nearest zones on both timeframes, trendlines, order blocks, every setup and
+the zone plans (how many zones are tradable, and the best one with its stop and target).
 
 1. Copy `TradeBotParity.mq5` and `TradeBotCore.mqh` to `MQL5/Scripts/` and compile.
 2. Open a chart (M5 for Scalp, H4 for Swing). Drag **TradeBotParity** onto it, choose the preset

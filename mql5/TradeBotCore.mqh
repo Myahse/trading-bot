@@ -46,6 +46,7 @@ struct Config
    bool              trendFilter, breakouts;
    double            riskPct, minLotMaxRisk, beR, partialR, partialPct, trailStartR, trailATR, maxDailyLoss;
    int               trail, maxTradesDay;
+   bool              zoneBest;            // charts: only the best zone (swing) instead of every tradable one (scalp)
   };
 
 struct Pivot  { int index; double price; int kind; int confirmed; };          // kind +1 swing high, -1 swing low
@@ -56,6 +57,10 @@ struct OBlock { int kind; int index; double lo; double hi; int created; int inva
 struct Tag    { string reason; double level; };
 struct Signal { int side; string setup; double entry; double stop; double target; double trigger; double rr; string reasons;
                 double zoneLo; double zoneHi; double htfLo; double htfHi; };   // zones the rejection came off (0 = none)
+
+// A zone the bot could trade from, with the plan if price came back to it (port of tradebot/zoneplan.py)
+struct ZPlan  { double lo; double hi; int side; bool htf; bool backed; double entry; double stop; double target;
+                double rr; bool tradable; string why; };
 
 void ClearSignal(Signal &s)
   {
@@ -95,6 +100,7 @@ void ApplyPreset(int preset)
       C.minStopATR = 1.0; C.trendFilter = true; C.breakouts = true;
       C.riskPct = 0.5; C.minLotMaxRisk = 5.0; C.beR = 1.0; C.partialR = 1.0; C.partialPct = 50.0;
       C.trail = TRAIL_ATR; C.trailStartR = 1.0; C.trailATR = 1.5; C.maxDailyLoss = 3.0; C.maxTradesDay = 8;
+      C.zoneBest = false;
      }
    else if(preset == PRESET_SWING)
      {
@@ -103,6 +109,7 @@ void ApplyPreset(int preset)
       C.minStopATR = 0.0; C.trendFilter = true; C.breakouts = true;
       C.riskPct = 1.0; C.minLotMaxRisk = 5.0; C.beR = 1.0; C.partialR = 1.5; C.partialPct = 50.0;
       C.trail = TRAIL_SWING; C.trailStartR = 1.5; C.trailATR = 2.0; C.maxDailyLoss = 0.0; C.maxTradesDay = 0;
+      C.zoneBest = true;
      }
   }
 
@@ -695,5 +702,163 @@ bool Setup(int side, Signal &s)
    return false;
   }
 
+
+//+------------------------------------------------------------------+
+//| Zone plans and scenarios (port of tradebot/zoneplan.py)          |
+//+------------------------------------------------------------------+
+bool Overlaps(const Zone &a, const Zone &b) { return a.lo <= b.hi && b.lo <= a.hi; }
+
+// The nearest obstacle beyond the entry, as for a live setup (Finish).
+double PlanTarget(int side, double entry, double stop, int t)
+  {
+   bool have = false;
+   double target = 0;
+   if(side == 1)
+     {
+      for(int i = 0; i < ArraySize(ZR); i++)  if(ZR[i].lo > entry  && (!have || ZR[i].lo < target))  { target = ZR[i].lo;  have = true; }
+      for(int i = 0; i < ArraySize(HZR); i++) if(HZR[i].lo > entry && (!have || HZR[i].lo < target)) { target = HZR[i].lo; have = true; }
+      for(int i = 0; i < ArraySize(OB); i++)
+         if(OB[i].kind == -1 && OBActive(OB[i], t) && OB[i].lo > entry && (!have || OB[i].lo < target)) { target = OB[i].lo; have = true; }
+     }
+   else
+     {
+      for(int i = 0; i < ArraySize(ZS); i++)  if(ZS[i].hi < entry  && (!have || ZS[i].hi > target))  { target = ZS[i].hi;  have = true; }
+      for(int i = 0; i < ArraySize(HZS); i++) if(HZS[i].hi < entry && (!have || HZS[i].hi > target)) { target = HZS[i].hi; have = true; }
+      for(int i = 0; i < ArraySize(OB); i++)
+         if(OB[i].kind == 1 && OBActive(OB[i], t) && OB[i].hi < entry && (!have || OB[i].hi > target)) { target = OB[i].hi; have = true; }
+     }
+   for(int k = 0; k < 2; k++)
+     {
+      int cnt = (k == 0) ? ArraySize(L) : ArraySize(LH);
+      for(int i = 0; i < cnt; i++)
+        {
+         Line ln;
+         if(k == 0) ln = L[i]; else ln = LH[i];
+         if(ln.kind != -side || ln.broken >= 0) continue;
+         double v = LineAt(ln, t);
+         if(side == 1 ? v > entry && (!have || v < target) : v < entry && (!have || v > target)) { target = v; have = true; }
+        }
+     }
+   if(!have) target = entry + side * C.defaultRR * MathAbs(entry - stop);
+   return target;
+  }
+
+void AddPlan(ZPlan &out[], const Zone &z, int side, bool htf, bool backed, int t, double maxATR)
+  {
+   double a = A[t], c = R[t].close;
+   double entry = (side == 1) ? z.hi : z.lo;
+   if(MathAbs(c - entry) > maxATR * a) return;
+   double stop = (side == 1) ? z.lo - STOP_BUF_ATR * a : z.hi + STOP_BUF_ATR * a;
+   double floorDist = C.minStopATR * a;
+   stop = (side == 1) ? MathMin(stop, entry - floorDist) : MathMax(stop, entry + floorDist);
+   ZPlan p;
+   p.lo = z.lo; p.hi = z.hi; p.side = side; p.htf = htf; p.backed = backed;
+   p.entry = entry; p.stop = stop; p.target = PlanTarget(side, entry, stop, t);
+   p.rr = MathAbs(p.target - entry) / MathAbs(entry - stop);
+   p.why = "";
+   if(C.trendFilter && direction == -side)
+      p.why = "against the " + BiasName(direction) + "trend";
+   else if(p.rr < C.minRR)
+      p.why = StringFormat("R:R %.1f (min %g)", p.rr, C.minRR);
+   p.tradable = (p.why == "");
+   int k = ArraySize(out);
+   ArrayResize(out, k + 1);
+   out[k] = p;
+  }
+
+// Plans for the zones within maxATR ATRs of price, best first: tradable, HTF-backed, nearest.
+int PlanZones(ZPlan &out[], double maxATR = 8.0)
+  {
+   ArrayResize(out, 0);
+   int t = N - 1;
+   if(!Valid(A[t])) return 0;
+   for(int side = 1; side >= -1; side -= 2)
+     {
+      int nz = (side == 1) ? ArraySize(ZS) : ArraySize(ZR), nh = (side == 1) ? ArraySize(HZS) : ArraySize(HZR);
+      for(int i = 0; i < nz; i++)
+        {
+         Zone z;
+         if(side == 1) z = ZS[i]; else z = ZR[i];
+         bool backed = false;
+         for(int j = 0; j < nh && !backed; j++) { Zone h; if(side == 1) h = HZS[j]; else h = HZR[j]; backed = Overlaps(z, h); }
+         AddPlan(out, z, side, false, backed, t, maxATR);
+        }
+      for(int j = 0; j < nh; j++)
+        {
+         Zone h;
+         if(side == 1) h = HZS[j]; else h = HZR[j];
+         bool covered = false;
+         for(int i = 0; i < nz && !covered; i++) { Zone z; if(side == 1) z = ZS[i]; else z = ZR[i]; covered = Overlaps(h, z); }
+         if(!covered) AddPlan(out, h, side, true, false, t, maxATR);
+        }
+     }
+   int n = ArraySize(out);
+   double c = R[t].close;
+   for(int i = 1; i < n; i++)                     // stable sort: tradable, HTF-backed, nearest
+      for(int j = i; j > 0; j--)
+        {
+         ZPlan x = out[j], y = out[j - 1];
+         int kx = (x.tradable ? 0 : 2) + (x.backed ? 0 : 1), ky = (y.tradable ? 0 : 2) + (y.backed ? 0 : 1);
+         if(kx < ky || (kx == ky && MathAbs(c - x.entry) < MathAbs(c - y.entry))) { out[j] = y; out[j - 1] = x; }
+         else break;
+        }
+   return n;
+  }
+
+int BestPlan(const ZPlan &plans[])
+  {
+   for(int i = 0; i < ArraySize(plans); i++) if(plans[i].tradable) return i;
+   return -1;
+  }
+
+string PlanLabel(const ZPlan &p)
+  {
+   return StringFormat("%s ZONE%s %s-%s", p.side == 1 ? "BUY" : "SELL", p.htf ? " (HTF)" : (p.backed ? " + HTF" : ""), PS(p.lo), PS(p.hi));
+  }
+
+// Main and alternative scenario: how the market may evolve from here, in levels to watch.
+void Scenarios(const ZPlan &plans[], string htfName, string &mainS, string &altS)
+  {
+   int t = N - 1, b = BestPlan(plans);
+   double price = R[t].close;
+   if(direction != 0 && b >= 0)
+     {
+      bool up = direction == 1;
+      ZPlan best = plans[b];
+      mainS = StringFormat("%s %strend: expect a %s into the %s zone %s-%s, a rejection there, then a move to %s. "
+                           "The plan fails on a close %s %s.", htfName, BiasName(direction), up ? "pullback" : "rally",
+                           up ? "buy" : "sell", PS(best.lo), PS(best.hi), PS(best.target), up ? "below" : "above", PS(best.stop));
+      int brk = -1, ext = -1;
+      for(int i = 0; i < ArraySize(plans); i++)
+        {
+         ZPlan p = plans[i];
+         if(i != b && p.side == direction && (up ? p.entry < best.stop : p.entry > best.stop) &&
+            (brk < 0 || MathAbs(price - p.entry) < MathAbs(price - plans[brk].entry))) brk = i;
+         if(p.side == -direction && (up ? p.lo > price : p.hi < price) &&
+            (ext < 0 || MathAbs(price - p.entry) < MathAbs(price - plans[ext].entry))) ext = i;
+        }
+      altS = StringFormat("A close %s %s breaks the %strend structure: stand aside", up ? "below" : "above", PS(best.stop), BiasName(direction));
+      altS += (brk >= 0) ? StringFormat("; the next %s is %s-%s.", up ? "support" : "resistance", PS(plans[brk].lo), PS(plans[brk].hi)) : ".";
+      if(ext >= 0) altS += StringFormat(" %s %s the move can extend.", up ? "Above" : "Below", PS(up ? plans[ext].hi : plans[ext].lo));
+      return;
+     }
+   if(direction != 0)
+     {
+      mainS = StringFormat("%s %strend, but no %s zone near price pays enough: wait for a new swing to form a zone.",
+                           htfName, BiasName(direction), direction == 1 ? "buy" : "sell");
+      altS = "Do not trade against the trend from the zones on the other side.";
+      return;
+     }
+   int s = -1, r = -1;
+   for(int i = 0; i < ArraySize(plans); i++)
+     {
+      if(plans[i].side == 1 && (s < 0 || MathAbs(price - plans[i].entry) < MathAbs(price - plans[s].entry))) s = i;
+      if(plans[i].side == -1 && (r < 0 || MathAbs(price - plans[i].entry) < MathAbs(price - plans[r].entry))) r = i;
+     }
+   mainS = "No clear trend: range trading only, from " + (s >= 0 ? "support " + PS(plans[s].lo) + "-" + PS(plans[s].hi) : "-")
+           + " and " + (r >= 0 ? "resistance " + PS(plans[r].lo) + "-" + PS(plans[r].hi) : "-") + ", with a confirmed rejection.";
+   altS = "A close outside the range sets the next trend" + (r >= 0 ? ": above " + PS(plans[r].hi) + " favours buys" : "")
+          + (s >= 0 ? ", below " + PS(plans[s].lo) + " favours sells" : "") + ".";
+  }
 
 #endif
