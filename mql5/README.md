@@ -205,6 +205,11 @@ what the Python backtests showed. Tick *Visual mode* to watch it trade candle by
 
 Choose **Custom** to set every value yourself in the inputs.
 
+**Small accounts:** the presets skip a trade when the minimum lot would risk more than 1.25x their risk.
+To trade a small account anyway, set *Allow the minimum lot up to this % risk* (group *Small accounts*),
+for example 15 on a $20 Crash 300 account where 0.5 lot risks about 5% on an M1 stop. Every trade then
+risks that much, so test it in the Strategy Tester first.
+
 ### Differences from the Python bot
 
 - **Higher-timeframe data:** read from MT5's H1/D1/... candles. Python builds them from the chart's

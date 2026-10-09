@@ -49,6 +49,9 @@ input double   InpTrailATR        = 1.5;            // ATR multiple for the ATR 
 input double   InpMaxDailyLossPct = 3.0;            // No new trades after losing this % today (0 = off)
 input int      InpMaxTradesDay    = 8;              // Max trades per day (0 = off)
 
+input group "Small accounts"
+input double   InpMinLotRiskCap   = 0;              // Allow the minimum lot up to this % risk on any preset (0 = preset's own limit)
+
 input group "News and safety"
 input bool     InpNewsFilter      = true;           // No new trades around high-impact news (forex/gold)
 input int      InpNewsMinutes     = 30;             // Minutes before/after the news
@@ -152,6 +155,7 @@ void LoadConfig()
    C.maxDailyLoss = InpMaxDailyLossPct; C.maxTradesDay = InpMaxTradesDay; C.zoneBest = InpZoneBest; C.patterns = InpPatterns;
 
    ApplyPreset((int)InpPreset);   // Scalp/Swing overwrite the inputs
+   if(InpMinLotRiskCap > 0) C.minLotMaxRisk = InpMinLotRiskCap;   // small accounts: the minimum lot may risk more
    gHistoryBars = InpHistoryBars;
    gHTFHistoryBars = InpHTFHistoryBars;
   }
