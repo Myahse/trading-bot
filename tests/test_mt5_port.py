@@ -105,6 +105,7 @@ def test_ea_presets_match_python_modes(mode):
         "zoneBest": float(full.zone_view == "best"),
         "riskPct": money["risk_per_trade"] * 100, "beR": money["breakeven_r"], "partialR": money["partial_r"],
         "partialPct": money["partial_pct"] * 100, "trailStartR": money["trail_start_r"],
+        "minLotMaxRisk": money["min_lot_max_risk"] * 100,
         "maxDailyLoss": (money.get("max_daily_loss") or 0) * 100, "maxTradesDay": money.get("max_trades_per_day") or 0,
     }
     for key, want in pairs.items():

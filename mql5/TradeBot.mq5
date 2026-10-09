@@ -38,7 +38,7 @@ input bool     InpPatterns        = true;           // Candlestick/chart pattern
 
 input group "Money management (Custom preset)"
 input double   InpRiskPct         = 0.5;            // Risk per trade, % of balance
-input double   InpMinLotMaxRisk   = 5.0;            // Skip if even the minimum lot risks more than this %
+input double   InpMinLotMaxRisk   = 0.625;          // Skip if even the minimum lot risks more than this % (presets: 1.25x the risk)
 input double   InpMaxSpreadRisk   = 20.0;           // Skip a setup when the spread is more than this % of its risk (0 = off)
 input double   InpBreakevenR      = 1.0;            // Move stop to entry at this many R (0 = off)
 input double   InpPartialR        = 1.0;            // Partial profit at this many R (0 = off)
@@ -48,6 +48,9 @@ input double   InpTrailStartR     = 1.0;            // Start trailing at this ma
 input double   InpTrailATR        = 1.5;            // ATR multiple for the ATR trailing stop
 input double   InpMaxDailyLossPct = 3.0;            // No new trades after losing this % today (0 = off)
 input int      InpMaxTradesDay    = 8;              // Max trades per day (0 = off)
+
+input group "Small accounts"
+input double   InpMinLotRiskCap   = 0;              // Allow the minimum lot up to this % risk on any preset (0 = preset's own limit)
 
 input group "News and safety"
 input bool     InpNewsFilter      = true;           // No new trades around high-impact news (forex/gold)
@@ -152,6 +155,7 @@ void LoadConfig()
    C.maxDailyLoss = InpMaxDailyLossPct; C.maxTradesDay = InpMaxTradesDay; C.zoneBest = InpZoneBest; C.patterns = InpPatterns;
 
    ApplyPreset((int)InpPreset);   // Scalp/Swing overwrite the inputs
+   if(InpMinLotRiskCap > 0) C.minLotMaxRisk = InpMinLotRiskCap;   // small accounts: the minimum lot may risk more
    gHistoryBars = InpHistoryBars;
    gHTFHistoryBars = InpHTFHistoryBars;
   }

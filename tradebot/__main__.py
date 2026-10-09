@@ -85,8 +85,9 @@ def _parser() -> argparse.ArgumentParser:
     g.add_argument("--lot-step", type=float, default=0.01)
     g.add_argument("--min-lot", type=float, help="smallest volume your broker accepts (forex/gold 0.01; "
                    "synthetic indices vary - check the MT5 specification)")
-    g.add_argument("--min-lot-max-risk", type=float, default=0.05,
-                   help="skip a trade if even the minimum lot would risk more than this fraction (default 0.05)")
+    g.add_argument("--min-lot-max-risk", type=float,
+                   help="skip a trade if even the minimum lot would risk more than this fraction "
+                        "(presets: 1.25x --risk; otherwise 0.05)")
 
     g = p.add_argument_group("output")
     g.add_argument("--plot", help="save a chart to this .png")

@@ -25,6 +25,7 @@ and on a demo account.
 | Minimum reward:risk | 1.5 | 2.0 |
 | Confirmation | break of the signal candle within 3 candles | break within 2 candles |
 | Risk per trade | 0.5% | 1% |
+| Skip if the minimum lot risks more than | 0.625% | 1.25% |
 | Partial profit | 50% at +1R | 50% at +1.5R |
 | Break-even | at +1R | at +1R |
 | Trailing stop | 1.5 ATR behind the best price, from +1R | behind each new swing, from +1.5R |
@@ -111,8 +112,10 @@ For forex and gold, positions are sized in real lots. Each lot is 100,000 units 
 and 100 oz for gold; the minimum is 0.01 lots, in steps of 0.01. Profit and loss is converted to USD.
 - **Lot size:** the bot works out the lot size for `--risk`, then rounds it down to the lot step.
 - **Minimum lot:** if that comes out below the minimum, the bot uses the minimum lot, but only
-  while it risks no more than `--min-lot-max-risk` (default 5%) of the account. Above that the
-  setup is skipped and the signal says **NOT TRADEABLE**, with the real risk.
+  while it risks no more than `--min-lot-max-risk` of the account: 1.25x `--risk` with the presets
+  (0.625% scalp, 1.25% swing), 5% otherwise. Above that the setup is skipped and the signal says
+  **NOT TRADEABLE**, with the real risk. (Up to 5% made a $50 V75 (1s) account risk 2.7% a trade
+  on average instead of 0.5%.)
 - **Margin:** a position also needs margin. 0.01 lots of GBPUSD is about $1,300 of currency,
   so a $20 account needs at least ~65x leverage. Set `--leverage` to your account's.
 - **Partial profit:** 0.01 lots can't be halved, so on tiny positions the partial take-profit is
