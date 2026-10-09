@@ -182,7 +182,7 @@ what the Python backtests showed. Tick *Visual mode* to watch it trade candle by
 | Setups | **Rejection:** price tags 2+ levels and closes back the other way. **Breakout:** a strong candle closes through a trendline. Both only in the higher-timeframe direction |
 | Confirmation | **Break:** enter when price trades through the signal candle's high/low within N candles, cancelled if the stop level trades first. **Close:** enter after a candle closes beyond it. **None:** enter at the next open |
 | Stop / target | The stop goes beyond the levels used (and at least `min stop ATR` away). The target is the nearest opposing level, or a default R. Setups below the minimum reward:risk are skipped. Both sit on the server |
-| Size | Risk % of the balance, from MT5's tick value (correct for any symbol, JPY crosses included). If the minimum lot would risk more than the limit, or margin is short, the trade is skipped |
+| Size | Risk % of the balance, from MT5's tick value (correct for any symbol, JPY crosses included). If the minimum lot would risk more than the limit (1.25x the risk on the presets), or margin is short, the trade is skipped |
 | Management | Partial profit at +1R (lots permitting), stop to break-even, trailing stop (ATR behind the best price, or behind each new swing). Stops only tighten |
 | Spread | A setup is skipped when the live spread is more than 20% of its risk (*Max spread % of risk*); tight scalp stops were mostly paying the spread |
 | Limits | Daily loss limit and max trades per day (all charts running this magic number together), a cooldown after a loss |
@@ -198,6 +198,7 @@ what the Python backtests showed. Tick *Visual mode* to watch it trade candle by
 | Min reward:risk / default target | 1.5 / 1.5R | 2.0 / 2.5R |
 | Confirmation | break, 3 candles | break, 2 candles |
 | Risk per trade | 0.5% | 1% |
+| Skip if the minimum lot risks more than | 0.625% | 1.25% |
 | Partial / break-even / trail | 50% at 1R / 1R / 1.5 ATR from 1R | 50% at 1.5R / 1R / swings from 1.5R |
 | Daily limits | -3%, 8 trades | off |
 | Patterns count as levels | no (shown only) | yes |

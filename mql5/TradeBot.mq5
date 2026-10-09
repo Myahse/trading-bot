@@ -38,7 +38,7 @@ input bool     InpPatterns        = true;           // Candlestick/chart pattern
 
 input group "Money management (Custom preset)"
 input double   InpRiskPct         = 0.5;            // Risk per trade, % of balance
-input double   InpMinLotMaxRisk   = 5.0;            // Skip if even the minimum lot risks more than this %
+input double   InpMinLotMaxRisk   = 0.625;          // Skip if even the minimum lot risks more than this % (presets: 1.25x the risk)
 input double   InpMaxSpreadRisk   = 20.0;           // Skip a setup when the spread is more than this % of its risk (0 = off)
 input double   InpBreakevenR      = 1.0;            // Move stop to entry at this many R (0 = off)
 input double   InpPartialR        = 1.0;            // Partial profit at this many R (0 = off)

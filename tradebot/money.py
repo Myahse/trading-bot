@@ -76,7 +76,7 @@ def position(mm: MoneyManagement, equity: float, entry: float, stop: float) -> P
         min_risk = mm.min_lot * per_lot / equity
         if min_risk > mm.min_lot_max_risk:
             return Position(0.0, 0.0, min_risk, rate, f"skipped: the minimum {mm.min_lot:g} lot would risk "
-                                                      f"{min_risk:.1%} of the account (limit {mm.min_lot_max_risk:.0%})")
+                                                      f"{min_risk:.1%} of the account (limit {mm.min_lot_max_risk:.1%})")
         want, note = mm.min_lot, f"minimum lot: risking {min_risk:.1%} instead of {mm.risk_per_trade:.1%}"
     cap = math.floor(max_units / mm.contract_size / step + 1e-9) * step
     if want > cap:

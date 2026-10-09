@@ -118,7 +118,7 @@ void ApplyPreset(int preset)
       C.htf = PERIOD_H1; C.pivot = 3; C.htfPivot = 3; C.minConfluence = 2; C.confirm = CONFIRM_BREAK; C.confirmBars = 3;
       C.retest = 12; C.cooldown = 6; C.obMaxAge = 100; C.zoneLookback = 30; C.minRR = 1.5; C.defaultRR = 1.5;
       C.minStopATR = 1.0; C.trendFilter = true; C.breakouts = true;
-      C.riskPct = 0.5; C.minLotMaxRisk = 5.0; C.beR = 1.0; C.partialR = 1.0; C.partialPct = 50.0;
+      C.riskPct = 0.5; C.minLotMaxRisk = 0.625; C.beR = 1.0; C.partialR = 1.0; C.partialPct = 50.0;
       C.trail = TRAIL_ATR; C.trailStartR = 1.0; C.trailATR = 1.5; C.maxDailyLoss = 3.0; C.maxTradesDay = 8;
       C.zoneBest = false; C.patterns = false;   // shown, not counted: they made 5m entries worse
      }
@@ -127,7 +127,7 @@ void ApplyPreset(int preset)
       C.htf = PERIOD_D1; C.pivot = 5; C.htfPivot = 3; C.minConfluence = 2; C.confirm = CONFIRM_BREAK; C.confirmBars = 2;
       C.retest = 15; C.cooldown = 3; C.obMaxAge = 150; C.zoneLookback = 40; C.minRR = 2.0; C.defaultRR = 2.5;
       C.minStopATR = 0.0; C.trendFilter = true; C.breakouts = true;
-      C.riskPct = 1.0; C.minLotMaxRisk = 5.0; C.beR = 1.0; C.partialR = 1.5; C.partialPct = 50.0;
+      C.riskPct = 1.0; C.minLotMaxRisk = 1.25; C.beR = 1.0; C.partialR = 1.5; C.partialPct = 50.0;
       C.trail = TRAIL_SWING; C.trailStartR = 1.5; C.trailATR = 2.0; C.maxDailyLoss = 0.0; C.maxTradesDay = 0;
       C.zoneBest = true; C.patterns = true;
      }

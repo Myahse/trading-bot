@@ -75,6 +75,8 @@ class StrategyConfig:
     fake_bars: int = 3
 
 
+# min_lot_max_risk: when even the minimum lot risks more than 1.25x risk_per_trade, the trade is skipped
+# (rounding up to the minimum lot made small Deriv accounts risk 2-5x the setting).
 MODES: dict[str, dict] = {
     # 5m entries (1m-15m all work), direction and big levels from the hourly chart.
     "scalp": dict(interval="5m", count=20_000, period="60d",
@@ -84,14 +86,14 @@ MODES: dict[str, dict] = {
                               patterns=False),   # shown, not counted: they made 5m entries worse
                   money=dict(risk_per_trade=0.005, breakeven_r=1.0, partial_r=1.0, partial_pct=0.5,
                              trail="atr", trail_start_r=1.0, trail_atr=1.5, max_daily_loss=0.03,
-                             max_trades_per_day=8)),
+                             max_trades_per_day=8, min_lot_max_risk=0.00625)),
     # 4h entries, direction and big levels from the daily chart.
     "swing": dict(interval="4h", count=5_000, period="730d",
                   config=dict(htf="D", pivot_left=5, pivot_right=5, htf_pivot=3, zone_lookback_pivots=40,
                               ob_max_age=150, min_rr=2.0, default_rr=2.5, retest_window=15, cooldown_bars=3,
                               confirmation="break", confirm_bars=2, zone_view="best", patterns=True),
                   money=dict(risk_per_trade=0.01, breakeven_r=1.0, partial_r=1.5, partial_pct=0.5,
-                             trail="swing", trail_start_r=1.5, max_daily_loss=None)),
+                             trail="swing", trail_start_r=1.5, max_daily_loss=None, min_lot_max_risk=0.0125)),
 }
 
 
