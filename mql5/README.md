@@ -93,6 +93,20 @@ and paste the ID. Alerts are off in the Strategy Tester.
 On a **real** account it only analyses and never sends an order, unless you set *Allow trading a
 REAL account* to `true`. Keep it on demo until weeks of results justify more.
 
+## The journal (`MQL5/Files/TradeBot_journal.csv`)
+
+One line per event: `setup armed` (a setup waiting for its confirmation: no order is at the broker
+yet), `filled`, `order cancelled`, `order failed`, `skipped`, `partial`, `stop moved`.
+
+- **`order failed, 10027 auto trading disabled by client`**: MT5 blocked the order. Press the
+  **Algo Trading** button in the toolbar (it turns green) and tick *Allow Algo Trading* in the EA's
+  **Common** tab. The EA now checks this itself: the panel says *Algo Trading is OFF* and no setup is
+  armed until it is on.
+- A setup is acted on once. Re-attaching the EA, changing an input or switching timeframes does not
+  send the same setup again (*this setup was already taken*).
+- The panel warns when the chart's timeframe is not the preset's (M5 for Scalp, H4 for Swing): the
+  rules were only tested on those.
+
 ## Check that it matches the Python bot
 
 `TradeBotParity.mq5` runs the EA's own analysis (`TradeBotCore.mqh`) on every closed candle of a

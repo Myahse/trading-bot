@@ -74,6 +74,8 @@ CTrade   trade;
 datetime lastBar = 0;
 bool     tradingPermitted = false;
 string   lastNote = "";
+bool     algoWarned = false;     // the "Algo Trading is off" alert was shown
+string   tfWarning = "";         // the chart's timeframe is not the one the preset is built for
 
 // a setup waiting for its confirmation
 bool     armed = false;
@@ -88,6 +90,19 @@ int LotDigits(double step)
    int d = (int)MathRound(-MathLog10(step));
    return d < 0 ? 0 : d;
   }
+
+// MT5 sends no order unless the toolbar's Algo Trading button and the EA's own "Allow Algo Trading"
+// are both on: without them every order fails with 10027.
+bool AlgoOn()
+  {
+   return MQLInfoInteger(MQL_TESTER) || (TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) && MQLInfoInteger(MQL_TRADE_ALLOWED));
+  }
+
+// A setup is acted on once: re-attaching the EA, changing an input or switching timeframes
+// re-reads the last closed candle, and must not send the same setup again.
+string TakenKey() { return StringFormat("TB.taken.%s.%d.%d", _Symbol, InpMagic, (int)Period()); }
+bool   Taken(datetime bar) { return GlobalVariableCheck(TakenKey()) && (datetime)GlobalVariableGet(TakenKey()) == bar; }
+void   MarkTaken(datetime bar) { GlobalVariableSet(TakenKey(), (double)bar); }
 
 double StopsLevel()
   {
@@ -1010,11 +1025,17 @@ int OnInit()
    tradingPermitted = MQLInfoInteger(MQL_TESTER) || mode == ACCOUNT_TRADE_MODE_DEMO || InpAllowReal;
    if(!tradingPermitted)
       Alert("TradeBot: this is a REAL account and 'Allow trading a REAL account' is off - analysis only, no orders.");
-   if(InpPreset == PRESET_SCALP && Period() != PERIOD_M5)
-      Print("TradeBot: the Scalp preset is designed for M5 charts (this chart is ", EnumToString(Period()), ").");
-   if(InpPreset == PRESET_SWING && Period() != PERIOD_H4)
-      Print("TradeBot: the Swing preset is designed for H4 charts (this chart is ", EnumToString(Period()), ").");
+   ENUM_TIMEFRAMES want = (InpPreset == PRESET_SCALP) ? PERIOD_M5 : PERIOD_H4;
+   tfWarning = "";
+   if(Period() != want)
+     {
+      tfWarning = StringFormat("wrong timeframe: %s is built for %s charts, this one is %s - results untested",
+                               InpPreset == PRESET_SCALP ? "Scalp" : "Swing", StringSubstr(EnumToString(want), 7),
+                               StringSubstr(EnumToString(Period()), 7));
+      Alert("TradeBot: ", tfWarning);
+     }
    lastBar = 0;
+   algoWarned = false;
    return INIT_SUCCEEDED;
   }
 
@@ -1026,7 +1047,7 @@ void OnDeinit(const int reason)
 
 void OnTick()
   {
-   if(tradingPermitted)
+   if(tradingPermitted && AlgoOn())
      {
       ManagePartial();
       CheckArmedTick();
@@ -1037,12 +1058,22 @@ void OnTick()
 
    if(!Analyse()) return;
    string status = tradingPermitted ? "trading" : "analysis only (real account)";
+   bool algo = AlgoOn();
+   if(tradingPermitted && !algo)
+     {
+      status = "Algo Trading is OFF - press the Algo Trading button in the toolbar (no orders until then)";
+      if(!algoWarned) Alert("TradeBot: Algo Trading is off - setups are shown but no order can be sent. "
+                            "Press the Algo Trading button in the toolbar, and tick Allow Algo Trading in the EA's Common tab.");
+      algoWarned = true;
+     }
+   else if(algo)
+      algoWarned = false;
    Signal s;
    ClearSignal(s);
    bool haveSignal = Setup(1, s) || Setup(-1, s);
    CheckAlerts(s, haveSignal);
 
-   if(tradingPermitted)
+   if(tradingPermitted && algo)
      {
       CheckArmedBar();
       ManageStops();
@@ -1053,8 +1084,11 @@ void OnTick()
          status = "waiting for confirmation";
       else if(!DailyLimitsOk(why) || InCooldown(why))
          status = why;
+      else if(haveSignal && Taken(R[N - 1].time))
+         status = "this setup was already taken";
       else if(haveSignal)
         {
+         MarkTaken(R[N - 1].time);
          if(NewsBlocked(why) || !SpreadOk(s, why))
            { Journal("skipped", why); status = why; lastNote = why; }
          else if(C.confirm == CONFIRM_NONE)
@@ -1064,7 +1098,7 @@ void OnTick()
             armed = true;
             armedSig = s;
             armedBarsLeft = C.confirmBars;
-            Journal("order placed", StringFormat("%s %s: %s %s, SL %s, TP %s, R:R %.1f - %s",
+            Journal("setup armed", StringFormat("%s %s: %s %s, SL %s, TP %s, R:R %.1f - %s",
                                                  s.side == 1 ? "LONG" : "SHORT", s.setup,
                                                  C.confirm == CONFIRM_BREAK ? "enter on a break of" : "enter after a close beyond",
                                                  PS(s.trigger), PS(s.stop), PS(s.target), s.rr, s.reasons));
@@ -1073,6 +1107,8 @@ void OnTick()
            }
         }
      }
+   if(tfWarning != "" && (status == "trading" || status == "waiting for confirmation"))
+      status = tfWarning;
    Draw(s, haveSignal);
    Panel(s, haveSignal, status);
   }
