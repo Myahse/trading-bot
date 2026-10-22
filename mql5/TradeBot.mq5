@@ -52,6 +52,8 @@ input int      InpMaxTradesDay    = 8;              // Max trades per day (0 = o
 input group "When to trade (every preset)"
 input ESides   InpSides           = SIDES_BOTH;     // Directions to trade
 input string   InpSkipHours       = "";             // Server hours with no new trades, e.g. "8,9,21-23" (empty = none)
+input int      InpLearnDays       = 0;              // Learn: skip hours whose trades lost money over this many days (0 = off)
+input int      InpLearnMinTrades  = 4;              // Learn: trades an hour needs in that window before it can be skipped
 
 input group "News and safety"
 input bool     InpNewsFilter      = true;           // No new trades around high-impact news (forex/gold)
@@ -269,6 +271,44 @@ bool ParseSkipHours(string text)
    return true;
   }
 
+// Learned hour filter: net result of this bot's closed trades on this symbol, by the server hour they
+// were entered, over the last InpLearnDays. An hour with enough trades and a net loss is skipped until
+// its losing trades age out of the window.
+bool LearnedSkip(int hour, string &why)
+  {
+   if(InpLearnDays <= 0) return false;
+   if(!HistorySelect(TimeCurrent() - (datetime)InpLearnDays * 86400, TimeCurrent() + 60)) return false;
+   int n = 0;
+   double net = 0;
+   int total = HistoryDealsTotal();
+   for(int i = 0; i < total; i++)
+     {
+      ulong d = HistoryDealGetTicket(i);
+      if(d == 0 || HistoryDealGetInteger(d, DEAL_MAGIC) != InpMagic || HistoryDealGetString(d, DEAL_SYMBOL) != _Symbol) continue;
+      if(HistoryDealGetInteger(d, DEAL_ENTRY) != DEAL_ENTRY_IN) continue;
+      MqlDateTime t;
+      TimeToStruct((datetime)HistoryDealGetInteger(d, DEAL_TIME), t);
+      if(t.hour != hour) continue;
+      long pid = HistoryDealGetInteger(d, DEAL_POSITION_ID);
+      bool closed = false;
+      double result = 0;
+      for(int j = 0; j < total; j++)
+        {
+         ulong e = HistoryDealGetTicket(j);
+         if(e == 0 || HistoryDealGetInteger(e, DEAL_POSITION_ID) != pid) continue;
+         long entry = HistoryDealGetInteger(e, DEAL_ENTRY);
+         if(entry == DEAL_ENTRY_OUT || entry == DEAL_ENTRY_OUT_BY) closed = true;
+         result += HistoryDealGetDouble(e, DEAL_PROFIT) + HistoryDealGetDouble(e, DEAL_SWAP) + HistoryDealGetDouble(e, DEAL_COMMISSION);
+        }
+      if(!closed || PositionSelectByTicket((ulong)pid)) continue;   // still open: not a result yet
+      n++;
+      net += result;
+     }
+   if(n < InpLearnMinTrades || net >= 0) return false;
+   why = StringFormat("skipped: learned - %02d:00 lost %.2f over its last %d trades (%d days)", hour, net, n, InpLearnDays);
+   return true;
+  }
+
 // The direction and hour filters: no new trade on a side or in an hour the inputs rule out.
 bool WhenOk(const Signal &s, string &why)
   {
@@ -278,6 +318,7 @@ bool WhenOk(const Signal &s, string &why)
    TimeToStruct(TimeCurrent(), d);
    if(skipHour[d.hour])
      { why = StringFormat("skipped: no new trades at %02d:00 server time", d.hour); return false; }
+   if(LearnedSkip(d.hour, why)) return false;
    return true;
   }
 
