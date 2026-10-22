@@ -20,6 +20,10 @@ enum ETrail   { TRAIL_NONE = 0,     // No trailing stop
                 TRAIL_ATR = 1,      // ATR behind the best price
                 TRAIL_SWING = 2     // Behind each new swing
               };
+enum ESides   { SIDES_BOTH = 0,     // Buys and sells
+                SIDES_LONG = 1,     // Buys only
+                SIDES_SHORT = -1    // Sells only
+              };
 
 //--- fixed rules, as in the Python bot
 #define ATR_PERIOD          14

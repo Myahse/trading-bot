@@ -49,6 +49,10 @@ input double   InpTrailATR        = 1.5;            // ATR multiple for the ATR 
 input double   InpMaxDailyLossPct = 3.0;            // No new trades after losing this % today (0 = off)
 input int      InpMaxTradesDay    = 8;              // Max trades per day (0 = off)
 
+input group "When to trade (every preset)"
+input ESides   InpSides           = SIDES_BOTH;     // Directions to trade
+input string   InpSkipHours       = "";             // Server hours with no new trades, e.g. "8,9,21-23" (empty = none)
+
 input group "News and safety"
 input bool     InpNewsFilter      = true;           // No new trades around high-impact news (forex/gold)
 input int      InpNewsMinutes     = 30;             // Minutes before/after the news
@@ -235,6 +239,46 @@ bool SpreadOk(const Signal &s, string &why)
    if(risk <= 0 || spread <= InpMaxSpreadRisk / 100.0 * risk) return true;
    why = StringFormat("skipped: the spread (%s) is %.0f%% of the risk (max %.0f%%)", PS(spread), 100 * spread / risk, InpMaxSpreadRisk);
    return false;
+  }
+
+// InpSkipHours parsed into one flag per server hour, filled in OnInit.
+bool skipHour[24];
+
+// Reads "8,9,21-23" (a range may wrap, as in "22-2"). Returns false on anything it can't read.
+bool ParseSkipHours(string text)
+  {
+   ArrayInitialize(skipHour, false);
+   StringReplace(text, " ", "");
+   if(text == "") return true;
+   string parts[];
+   int n = StringSplit(text, ',', parts);
+   for(int i = 0; i < n; i++)
+     {
+      if(parts[i] == "") continue;
+      string ends[];
+      int m = StringSplit(parts[i], '-', ends);
+      if(m < 1 || m > 2) return false;
+      int a = (int)StringToInteger(ends[0]), b = (m == 2) ? (int)StringToInteger(ends[1]) : a;
+      if(a < 0 || a > 23 || b < 0 || b > 23) return false;
+      for(int h = a; ; h = (h + 1) % 24)
+        {
+         skipHour[h] = true;
+         if(h == b) break;
+        }
+     }
+   return true;
+  }
+
+// The direction and hour filters: no new trade on a side or in an hour the inputs rule out.
+bool WhenOk(const Signal &s, string &why)
+  {
+   if(InpSides != SIDES_BOTH && s.side != (int)InpSides)
+     { why = StringFormat("skipped: %s only", InpSides == SIDES_LONG ? "buys" : "sells"); return false; }
+   MqlDateTime d;
+   TimeToStruct(TimeCurrent(), d);
+   if(skipHour[d.hour])
+     { why = StringFormat("skipped: no new trades at %02d:00 server time", d.hour); return false; }
+   return true;
   }
 
 // Stand aside for C.cooldown bars after a losing trade on this symbol.
@@ -1018,6 +1062,11 @@ void PanelFull(const Signal &s, bool haveSignal, string status)
 int OnInit()
   {
    LoadConfig();
+   if(!ParseSkipHours(InpSkipHours))
+     {
+      Alert("TradeBot: can't read the hours \"", InpSkipHours, "\" - use server hours 0-23 like 8,9,21-23");
+      return INIT_PARAMETERS_INCORRECT;
+     }
    trade.SetExpertMagicNumber((ulong)InpMagic);
    trade.SetTypeFillingBySymbol(_Symbol);
    trade.SetDeviationInPoints(50);
@@ -1089,7 +1138,7 @@ void OnTick()
       else if(haveSignal)
         {
          MarkTaken(R[N - 1].time);
-         if(NewsBlocked(why) || !SpreadOk(s, why))
+         if(!WhenOk(s, why) || NewsBlocked(why) || !SpreadOk(s, why))
            { Journal("skipped", why); status = why; lastNote = why; }
          else if(C.confirm == CONFIRM_NONE)
             OpenMarket(s);
