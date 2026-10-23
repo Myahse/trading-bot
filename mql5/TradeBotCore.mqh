@@ -60,6 +60,7 @@ struct Config
    int               trail, maxTradesDay;
    bool              zoneBest;            // charts: only the best zone (swing) instead of every tradable one (scalp)
    bool              patterns;            // candlestick and chart patterns count as levels (and neckline breaks)
+   double            sniperPct;           // sniper entry: wait for a pullback of this % of the stop distance (0 = off)
   };
 
 struct Pivot  { int index; double price; int kind; int confirmed; };          // kind +1 swing high, -1 swing low
@@ -847,6 +848,11 @@ bool Finish(int side, string setup, double stop, string reasons, Signal &s, doub
 
    double trigger = (C.confirm == CONFIRM_NONE) ? 0.0 : (side == 1 ? R[t].high : R[t].low);
    double entry = (C.confirm == CONFIRM_NONE) ? c : trigger;   // judge reward:risk from the fill level
+   if(C.sniperPct > 0)                                         // sniper: a limit back toward the stop, same stop
+     {
+      entry = c - side * C.sniperPct / 100.0 * MathAbs(c - stop);
+      trigger = entry;
+     }
    double risk = MathAbs(entry - stop);
    if(risk <= 0) return false;
    bool beyond = (side == 1) ? entry >= target : entry <= target;

@@ -54,6 +54,8 @@ input ESides   InpSides           = SIDES_BOTH;     // Directions to trade
 input string   InpSkipHours       = "";             // Server hours with no new trades, e.g. "8,9,21-23" (empty = none)
 input int      InpLearnDays       = 0;              // Learn: skip hours whose trades lost money over this many days (0 = off)
 input int      InpLearnMinTrades  = 4;              // Learn: trades an hour needs in that window before it can be skipped
+input double   InpSniperPct       = 0;              // Sniper entry: wait for a pullback of this % of the stop distance (0 = off)
+input int      InpSniperBars      = 6;              // Sniper entry: candles the pullback may take
 
 input group "News and safety"
 input bool     InpNewsFilter      = true;           // No new trades around high-impact news (forex/gold)
@@ -158,6 +160,7 @@ void LoadConfig()
    C.maxDailyLoss = InpMaxDailyLossPct; C.maxTradesDay = InpMaxTradesDay; C.zoneBest = InpZoneBest; C.patterns = InpPatterns;
 
    ApplyPreset((int)InpPreset);   // Scalp/Swing overwrite the inputs
+   C.sniperPct = InpSniperPct;
    gHistoryBars = InpHistoryBars;
    gHTFHistoryBars = InpHTFHistoryBars;
   }
@@ -451,14 +454,23 @@ bool OpenMarket(const Signal &s)
    return true;
   }
 
-// Confirmation: checked on every tick for "break", at each candle close for "close".
+// Confirmation: checked on every tick for "break" and sniper pullbacks, at each candle close for "close".
 void CheckArmedTick()
   {
-   if(!armed || armedSig.trigger <= 0 || C.confirm != CONFIRM_BREAK) return;
+   bool sniper = C.sniperPct > 0;
+   if(!armed || armedSig.trigger <= 0 || (!sniper && C.confirm != CONFIRM_BREAK)) return;
    MqlTick tick;
    if(!SymbolInfoTick(_Symbol, tick)) return;
    if(armedSig.side == 1 ? tick.bid <= armedSig.stop : tick.ask >= armedSig.stop)
      { armed = false; Journal("order cancelled", "stop level traded before the confirmation"); return; }
+   if(sniper)
+     {
+      if(armedSig.side == 1 ? tick.bid >= armedSig.target : tick.ask <= armedSig.target)
+        { armed = false; Journal("order cancelled", "target reached without the pullback"); return; }
+      if(armedSig.side == 1 ? tick.ask <= armedSig.trigger : tick.bid >= armedSig.trigger)
+        { armed = false; OpenMarket(armedSig); }
+      return;
+     }
    if(armedSig.side == 1 ? tick.ask >= armedSig.trigger : tick.bid <= armedSig.trigger)
      {
       armed = false;
@@ -470,7 +482,7 @@ void CheckArmedBar()
   {
    if(!armed) return;
    int t = N - 1;
-   if(C.confirm == CONFIRM_CLOSE)
+   if(C.confirm == CONFIRM_CLOSE && C.sniperPct <= 0)
      {
       if(armedSig.side == 1 ? R[t].low <= armedSig.stop : R[t].high >= armedSig.stop)
         { armed = false; Journal("order cancelled", "stop level traded before the confirmation"); return; }
@@ -757,7 +769,7 @@ void Draw(const Signal &s, bool haveSignal)
       Segment(PFX + "sl", R[t].time, s2.stop, right, s2.stop, dn, 2, STYLE_SOLID, false);
       Segment(PFX + "tp", R[t].time, s2.target, right, s2.target, up, 2, STYLE_SOLID, false);
       string verb = (s2.side == 1) ? "BUY" : "SELL";
-      string order = (s2.trigger > 0 ? verb + " STOP " : verb + " ") + PS(entry);
+      string order = (s2.trigger > 0 ? verb + (C.sniperPct > 0 ? " LIMIT " : " STOP ") : verb + " ") + PS(entry);
       Text(PFX + "entryT", right, entry, "ENTER HERE: " + order, ink, ANCHOR_LEFT, 9, "Arial Bold");
       // an arrow on the next candle, pointing at the order level from the side price comes from
       string arrow = PFX + "enter";
@@ -1181,15 +1193,16 @@ void OnTick()
          MarkTaken(R[N - 1].time);
          if(!WhenOk(s, why) || NewsBlocked(why) || !SpreadOk(s, why))
            { Journal("skipped", why); status = why; lastNote = why; }
-         else if(C.confirm == CONFIRM_NONE)
+         else if(C.confirm == CONFIRM_NONE && C.sniperPct <= 0)
             OpenMarket(s);
          else
            {
             armed = true;
             armedSig = s;
-            armedBarsLeft = C.confirmBars;
+            armedBarsLeft = C.sniperPct > 0 ? InpSniperBars : C.confirmBars;
             Journal("setup armed", StringFormat("%s %s: %s %s, SL %s, TP %s, R:R %.1f - %s",
                                                  s.side == 1 ? "LONG" : "SHORT", s.setup,
+                                                 C.sniperPct > 0 ? "enter on a pullback to" :
                                                  C.confirm == CONFIRM_BREAK ? "enter on a break of" : "enter after a close beyond",
                                                  PS(s.trigger), PS(s.stop), PS(s.target), s.rr, s.reasons));
             Screenshot("setup");
