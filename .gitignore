@@ -4,3 +4,6 @@ __pycache__/
 trades*.csv
 fundamentals.json
 reports/
+ctrader/**/bin/
+ctrader/**/obj/
+ctrader/**/cAlgo/

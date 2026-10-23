@@ -49,6 +49,14 @@ input double   InpTrailATR        = 1.5;            // ATR multiple for the ATR 
 input double   InpMaxDailyLossPct = 3.0;            // No new trades after losing this % today (0 = off)
 input int      InpMaxTradesDay    = 8;              // Max trades per day (0 = off)
 
+input group "When to trade (every preset)"
+input ESides   InpSides           = SIDES_BOTH;     // Directions to trade
+input string   InpSkipHours       = "";             // Server hours with no new trades, e.g. "8,9,21-23" (empty = none)
+input int      InpLearnDays       = 0;              // Learn: skip hours whose trades lost money over this many days (0 = off)
+input int      InpLearnMinTrades  = 4;              // Learn: trades an hour needs in that window before it can be skipped
+input double   InpSniperPct       = 0;              // Sniper entry: wait for a pullback of this % of the stop distance (0 = off)
+input int      InpSniperBars      = 6;              // Sniper entry: candles the pullback may take
+
 input group "News and safety"
 input bool     InpNewsFilter      = true;           // No new trades around high-impact news (forex/gold)
 input int      InpNewsMinutes     = 30;             // Minutes before/after the news
@@ -152,6 +160,7 @@ void LoadConfig()
    C.maxDailyLoss = InpMaxDailyLossPct; C.maxTradesDay = InpMaxTradesDay; C.zoneBest = InpZoneBest; C.patterns = InpPatterns;
 
    ApplyPreset((int)InpPreset);   // Scalp/Swing overwrite the inputs
+   C.sniperPct = InpSniperPct;
    gHistoryBars = InpHistoryBars;
    gHTFHistoryBars = InpHTFHistoryBars;
   }
@@ -235,6 +244,85 @@ bool SpreadOk(const Signal &s, string &why)
    if(risk <= 0 || spread <= InpMaxSpreadRisk / 100.0 * risk) return true;
    why = StringFormat("skipped: the spread (%s) is %.0f%% of the risk (max %.0f%%)", PS(spread), 100 * spread / risk, InpMaxSpreadRisk);
    return false;
+  }
+
+// InpSkipHours parsed into one flag per server hour, filled in OnInit.
+bool skipHour[24];
+
+// Reads "8,9,21-23" (a range may wrap, as in "22-2"). Returns false on anything it can't read.
+bool ParseSkipHours(string text)
+  {
+   ArrayInitialize(skipHour, false);
+   StringReplace(text, " ", "");
+   if(text == "") return true;
+   string parts[];
+   int n = StringSplit(text, ',', parts);
+   for(int i = 0; i < n; i++)
+     {
+      if(parts[i] == "") continue;
+      string ends[];
+      int m = StringSplit(parts[i], '-', ends);
+      if(m < 1 || m > 2) return false;
+      int a = (int)StringToInteger(ends[0]), b = (m == 2) ? (int)StringToInteger(ends[1]) : a;
+      if(a < 0 || a > 23 || b < 0 || b > 23) return false;
+      for(int h = a; ; h = (h + 1) % 24)
+        {
+         skipHour[h] = true;
+         if(h == b) break;
+        }
+     }
+   return true;
+  }
+
+// Learned hour filter: net result of this bot's closed trades on this symbol, by the server hour they
+// were entered, over the last InpLearnDays. An hour with enough trades and a net loss is skipped until
+// its losing trades age out of the window.
+bool LearnedSkip(int hour, string &why)
+  {
+   if(InpLearnDays <= 0) return false;
+   if(!HistorySelect(TimeCurrent() - (datetime)InpLearnDays * 86400, TimeCurrent() + 60)) return false;
+   int n = 0;
+   double net = 0;
+   int total = HistoryDealsTotal();
+   for(int i = 0; i < total; i++)
+     {
+      ulong d = HistoryDealGetTicket(i);
+      if(d == 0 || HistoryDealGetInteger(d, DEAL_MAGIC) != InpMagic || HistoryDealGetString(d, DEAL_SYMBOL) != _Symbol) continue;
+      if(HistoryDealGetInteger(d, DEAL_ENTRY) != DEAL_ENTRY_IN) continue;
+      MqlDateTime t;
+      TimeToStruct((datetime)HistoryDealGetInteger(d, DEAL_TIME), t);
+      if(t.hour != hour) continue;
+      long pid = HistoryDealGetInteger(d, DEAL_POSITION_ID);
+      bool closed = false;
+      double result = 0;
+      for(int j = 0; j < total; j++)
+        {
+         ulong e = HistoryDealGetTicket(j);
+         if(e == 0 || HistoryDealGetInteger(e, DEAL_POSITION_ID) != pid) continue;
+         long entry = HistoryDealGetInteger(e, DEAL_ENTRY);
+         if(entry == DEAL_ENTRY_OUT || entry == DEAL_ENTRY_OUT_BY) closed = true;
+         result += HistoryDealGetDouble(e, DEAL_PROFIT) + HistoryDealGetDouble(e, DEAL_SWAP) + HistoryDealGetDouble(e, DEAL_COMMISSION);
+        }
+      if(!closed || PositionSelectByTicket((ulong)pid)) continue;   // still open: not a result yet
+      n++;
+      net += result;
+     }
+   if(n < InpLearnMinTrades || net >= 0) return false;
+   why = StringFormat("skipped: learned - %02d:00 lost %.2f over its last %d trades (%d days)", hour, net, n, InpLearnDays);
+   return true;
+  }
+
+// The direction and hour filters: no new trade on a side or in an hour the inputs rule out.
+bool WhenOk(const Signal &s, string &why)
+  {
+   if(InpSides != SIDES_BOTH && s.side != (int)InpSides)
+     { why = StringFormat("skipped: %s only", InpSides == SIDES_LONG ? "buys" : "sells"); return false; }
+   MqlDateTime d;
+   TimeToStruct(TimeCurrent(), d);
+   if(skipHour[d.hour])
+     { why = StringFormat("skipped: no new trades at %02d:00 server time", d.hour); return false; }
+   if(LearnedSkip(d.hour, why)) return false;
+   return true;
   }
 
 // Stand aside for C.cooldown bars after a losing trade on this symbol.
@@ -366,14 +454,23 @@ bool OpenMarket(const Signal &s)
    return true;
   }
 
-// Confirmation: checked on every tick for "break", at each candle close for "close".
+// Confirmation: checked on every tick for "break" and sniper pullbacks, at each candle close for "close".
 void CheckArmedTick()
   {
-   if(!armed || armedSig.trigger <= 0 || C.confirm != CONFIRM_BREAK) return;
+   bool sniper = C.sniperPct > 0;
+   if(!armed || armedSig.trigger <= 0 || (!sniper && C.confirm != CONFIRM_BREAK)) return;
    MqlTick tick;
    if(!SymbolInfoTick(_Symbol, tick)) return;
    if(armedSig.side == 1 ? tick.bid <= armedSig.stop : tick.ask >= armedSig.stop)
      { armed = false; Journal("order cancelled", "stop level traded before the confirmation"); return; }
+   if(sniper)
+     {
+      if(armedSig.side == 1 ? tick.bid >= armedSig.target : tick.ask <= armedSig.target)
+        { armed = false; Journal("order cancelled", "target reached without the pullback"); return; }
+      if(armedSig.side == 1 ? tick.ask <= armedSig.trigger : tick.bid >= armedSig.trigger)
+        { armed = false; OpenMarket(armedSig); }
+      return;
+     }
    if(armedSig.side == 1 ? tick.ask >= armedSig.trigger : tick.bid <= armedSig.trigger)
      {
       armed = false;
@@ -385,7 +482,7 @@ void CheckArmedBar()
   {
    if(!armed) return;
    int t = N - 1;
-   if(C.confirm == CONFIRM_CLOSE)
+   if(C.confirm == CONFIRM_CLOSE && C.sniperPct <= 0)
      {
       if(armedSig.side == 1 ? R[t].low <= armedSig.stop : R[t].high >= armedSig.stop)
         { armed = false; Journal("order cancelled", "stop level traded before the confirmation"); return; }
@@ -672,7 +769,7 @@ void Draw(const Signal &s, bool haveSignal)
       Segment(PFX + "sl", R[t].time, s2.stop, right, s2.stop, dn, 2, STYLE_SOLID, false);
       Segment(PFX + "tp", R[t].time, s2.target, right, s2.target, up, 2, STYLE_SOLID, false);
       string verb = (s2.side == 1) ? "BUY" : "SELL";
-      string order = (s2.trigger > 0 ? verb + " STOP " : verb + " ") + PS(entry);
+      string order = (s2.trigger > 0 ? verb + (C.sniperPct > 0 ? " LIMIT " : " STOP ") : verb + " ") + PS(entry);
       Text(PFX + "entryT", right, entry, "ENTER HERE: " + order, ink, ANCHOR_LEFT, 9, "Arial Bold");
       // an arrow on the next candle, pointing at the order level from the side price comes from
       string arrow = PFX + "enter";
@@ -1018,6 +1115,11 @@ void PanelFull(const Signal &s, bool haveSignal, string status)
 int OnInit()
   {
    LoadConfig();
+   if(!ParseSkipHours(InpSkipHours))
+     {
+      Alert("TradeBot: can't read the hours \"", InpSkipHours, "\" - use server hours 0-23 like 8,9,21-23");
+      return INIT_PARAMETERS_INCORRECT;
+     }
    trade.SetExpertMagicNumber((ulong)InpMagic);
    trade.SetTypeFillingBySymbol(_Symbol);
    trade.SetDeviationInPoints(50);
@@ -1027,7 +1129,7 @@ int OnInit()
       Alert("TradeBot: this is a REAL account and 'Allow trading a REAL account' is off - analysis only, no orders.");
    ENUM_TIMEFRAMES want = (InpPreset == PRESET_SCALP) ? PERIOD_M5 : PERIOD_H4;
    tfWarning = "";
-   if(Period() != want)
+   if(InpPreset != PRESET_CUSTOM && Period() != want)              // Custom runs on any timeframe
      {
       tfWarning = StringFormat("wrong timeframe: %s is built for %s charts, this one is %s - results untested",
                                InpPreset == PRESET_SCALP ? "Scalp" : "Swing", StringSubstr(EnumToString(want), 7),
@@ -1089,17 +1191,18 @@ void OnTick()
       else if(haveSignal)
         {
          MarkTaken(R[N - 1].time);
-         if(NewsBlocked(why) || !SpreadOk(s, why))
+         if(!WhenOk(s, why) || NewsBlocked(why) || !SpreadOk(s, why))
            { Journal("skipped", why); status = why; lastNote = why; }
-         else if(C.confirm == CONFIRM_NONE)
+         else if(C.confirm == CONFIRM_NONE && C.sniperPct <= 0)
             OpenMarket(s);
          else
            {
             armed = true;
             armedSig = s;
-            armedBarsLeft = C.confirmBars;
+            armedBarsLeft = C.sniperPct > 0 ? InpSniperBars : C.confirmBars;
             Journal("setup armed", StringFormat("%s %s: %s %s, SL %s, TP %s, R:R %.1f - %s",
                                                  s.side == 1 ? "LONG" : "SHORT", s.setup,
+                                                 C.sniperPct > 0 ? "enter on a pullback to" :
                                                  C.confirm == CONFIRM_BREAK ? "enter on a break of" : "enter after a close beyond",
                                                  PS(s.trigger), PS(s.stop), PS(s.target), s.rr, s.reasons));
             Screenshot("setup");
