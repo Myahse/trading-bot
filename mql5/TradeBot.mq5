@@ -1117,7 +1117,7 @@ int OnInit()
       Alert("TradeBot: this is a REAL account and 'Allow trading a REAL account' is off - analysis only, no orders.");
    ENUM_TIMEFRAMES want = (InpPreset == PRESET_SCALP) ? PERIOD_M5 : PERIOD_H4;
    tfWarning = "";
-   if(Period() != want)
+   if(InpPreset != PRESET_CUSTOM && Period() != want)              // Custom runs on any timeframe
      {
       tfWarning = StringFormat("wrong timeframe: %s is built for %s charts, this one is %s - results untested",
                                InpPreset == PRESET_SCALP ? "Scalp" : "Swing", StringSubstr(EnumToString(want), 7),
