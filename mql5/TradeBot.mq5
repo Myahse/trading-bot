@@ -56,6 +56,9 @@ input int      InpLearnDays       = 0;              // Learn: skip hours whose t
 input int      InpLearnMinTrades  = 4;              // Learn: trades an hour needs in that window before it can be skipped
 input double   InpSniperPct       = 0;              // Sniper entry: wait for a pullback of this % of the stop distance (0 = off)
 input int      InpSniperBars      = 6;              // Sniper entry: candles the pullback may take
+input int      InpFVG             = 0;              // Fair value gaps count as a level: 0 off, 1 whole gap, 2 only from its 50% line
+input double   InpFVGMinATR       = 0.3;            // Smallest fair value gap counted, in ATR
+input int      InpFVGMaxAge       = 100;            // Bars a fair value gap stays valid
 
 input group "News and safety"
 input bool     InpNewsFilter      = true;           // No new trades around high-impact news (forex/gold)
@@ -161,6 +164,7 @@ void LoadConfig()
 
    ApplyPreset((int)InpPreset);   // Scalp/Swing overwrite the inputs
    C.sniperPct = InpSniperPct;
+   C.fvg = InpFVG; C.fvgMinATR = InpFVGMinATR; C.fvgMaxAge = InpFVGMaxAge;
    gHistoryBars = InpHistoryBars;
    gHTFHistoryBars = InpHTFHistoryBars;
   }

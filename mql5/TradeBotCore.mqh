@@ -61,6 +61,9 @@ struct Config
    bool              zoneBest;            // charts: only the best zone (swing) instead of every tradable one (scalp)
    bool              patterns;            // candlestick and chart patterns count as levels (and neckline breaks)
    double            sniperPct;           // sniper entry: wait for a pullback of this % of the stop distance (0 = off)
+   int               fvg;                 // fair value gaps as levels: 0 off, 1 the whole gap, 2 only its 50% line
+   double            fvgMinATR;           // smallest gap counted, in ATR
+   int               fvgMaxAge;           // bars a gap stays valid
   };
 
 struct Pivot  { int index; double price; int kind; int confirmed; };          // kind +1 swing high, -1 swing low
@@ -68,6 +71,7 @@ struct Zone   { double lo; double hi; int touches; };
 struct Line   { int i1; double p1; int i2; double p2; int kind; int broken; int touches; int lastTouch; bool htf; };
                                                                               // kind +1 rising support, -1 falling resistance
 struct OBlock { int kind; int index; double lo; double hi; int created; int invalid; }; // kind +1 bullish
+struct FGap   { int kind; double lo; double hi; int created; int invalid; };   // fair value gap, kind +1 bullish
 struct Tag    { string reason; double level; };
 struct Signal { int side; string setup; double entry; double stop; double target; double trigger; double rr; string reasons;
                 double zoneLo; double zoneHi; double htfLo; double htfHi; };   // zones the rejection came off (0 = none)
@@ -97,6 +101,7 @@ MqlRates RH[];  int NH = 0;  double AH[];  Pivot PH[]; int NPH = 0;           //
 Zone     ZS[], ZR[], HZS[], HZR[];                                            // support / resistance, nearest first
 Line     L[];   Line LH[];
 OBlock   OB[];
+FGap     FV[];
 int      biasE = 0, biasH = 0, direction = 0;
 CPattern PAT[];
 FBreak   FB[];                                                                // fake breaks, most recent first                                                               // chart patterns alive now
@@ -439,6 +444,33 @@ void FindOrderBlocks(const MqlRates &r[], int n, const Pivot &piv[], int np, con
      }
   }
 
+// Fair value gaps: candle i's low above candle i-2's high (bullish) or its high below i-2's low
+// (bearish), at least fvgMinATR wide. A gap is gone once a candle closes beyond its far edge.
+void FindFVGs(const MqlRates &r[], int n, const double &atr[], FGap &out[])
+  {
+   ArrayResize(out, 0);
+   if(C.fvg <= 0) return;
+   int k = 0;
+   for(int i = 2; i < n; i++)
+     {
+      if(!Valid(atr[i])) continue;
+      double minGap = C.fvgMinATR * atr[i];
+      int kind = 0; double lo = 0, hi = 0;
+      if(r[i].low - r[i - 2].high >= minGap && r[i].low > r[i - 2].high) { kind = 1; lo = r[i - 2].high; hi = r[i].low; }
+      else if(r[i - 2].low - r[i].high >= minGap && r[i].high < r[i - 2].low) { kind = -1; lo = r[i].high; hi = r[i - 2].low; }
+      if(kind == 0) continue;
+      ArrayResize(out, k + 1);
+      out[k].kind = kind; out[k].lo = lo; out[k].hi = hi; out[k].created = i;
+      out[k].invalid = FirstCloseBeyond(r, n, i, kind == 1 ? lo : hi, kind == 1);
+      k++;
+     }
+  }
+
+bool FVGActive(const FGap &g, int t)
+  {
+   return g.created < t && (g.invalid < 0 || g.invalid > t) && t - g.created <= C.fvgMaxAge;
+  }
+
 bool OBActive(const OBlock &b, int t)
   {
    return b.created <= t && (b.invalid < 0 || b.invalid > t) && t - b.created <= C.obMaxAge;
@@ -513,6 +545,7 @@ bool Analyse(int shift = 1)
    ArrayResize(L, 0);
    FindLines(R, N, P, NP, A, t, C.retest, 2 * (C.pivot + C.pivot), false, L);
    FindOrderBlocks(R, N, P, NP, A, OB);
+   FindFVGs(R, N, A, FV);
    biasE = Bias(P, NP);
 
    NH = 0; NPH = 0;
@@ -929,6 +962,17 @@ bool Setup(int side, Signal &s)
         { AddTag(tags, StringFormat("bullish order block %s-%s", PS(OB[i].lo), PS(OB[i].hi)), OB[i].lo); break; }
       if(side == -1 && h >= OB[i].lo - buf && c < OB[i].hi)
         { AddTag(tags, StringFormat("bearish order block %s-%s", PS(OB[i].lo), PS(OB[i].hi)), OB[i].hi); break; }
+     }
+
+   for(int i = ArraySize(FV) - 1; i >= 0 && C.fvg > 0; i--)   // most recent first
+     {
+      if(FV[i].kind != side || !FVGActive(FV[i], t)) continue;
+      double top = (C.fvg == 2) ? (FV[i].lo + FV[i].hi) / 2 : FV[i].hi;   // mode 2: price must reach the 50% line
+      double bot = (C.fvg == 2) ? (FV[i].lo + FV[i].hi) / 2 : FV[i].lo;
+      if(side == 1 && lo <= top + buf && c > FV[i].lo)
+        { AddTag(tags, StringFormat("bullish FVG %s-%s", PS(FV[i].lo), PS(FV[i].hi)), FV[i].lo); break; }
+      if(side == -1 && h >= bot - buf && c < FV[i].hi)
+        { AddTag(tags, StringFormat("bearish FVG %s-%s", PS(FV[i].lo), PS(FV[i].hi)), FV[i].hi); break; }
      }
 
    if(C.patterns)                                 // patterns as levels: the candle, a neckline retest, a double bottom/top
