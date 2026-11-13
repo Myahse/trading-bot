@@ -60,6 +60,11 @@ input int      InpFVG             = 0;              // Fair value gaps count as 
 input double   InpFVGMinATR       = 0.3;            // Smallest fair value gap counted, in ATR
 input int      InpFVGMaxAge       = 100;            // Bars a fair value gap stays valid
 
+input group "Fill safety"
+input bool     InpFillRRCheck     = false;          // Recheck reward:risk at the real fill price; skip below the minimum
+input bool     InpFillRecheck     = false;          // Recheck news and spread at the fill, not only when the setup is armed
+input double   InpBEOffsetR       = 0;              // Break-even: put the stop this many R past entry, plus the spread (0 = exactly at entry)
+
 input group "News and safety"
 input bool     InpNewsFilter      = true;           // No new trades around high-impact news (forex/gold)
 input int      InpNewsMinutes     = 30;             // Minutes before/after the news
@@ -428,6 +433,21 @@ bool OpenMarket(const Signal &s)
    double price = (s.side == 1) ? tick.ask : tick.bid;
    if(s.side == 1 ? (price <= s.stop || price >= s.target) : (price >= s.stop || price <= s.target))
      { Journal("skipped", "price already beyond the stop or the target"); return false; }
+   if(InpFillRRCheck)
+     {
+      double fillRR = MathAbs(s.target - price) / MathMax(MathAbs(price - s.stop), _Point);
+      if(fillRR < C.minRR - 1e-9)
+        {
+         lastNote = StringFormat("skipped: R:R at the fill price is %.2f (min %.2f)", fillRR, C.minRR);
+         Journal("skipped", lastNote); return false;
+        }
+     }
+   if(InpFillRecheck)
+     {
+      string why = "";
+      if(NewsBlocked(why) || !SpreadOk(s, why))
+        { lastNote = "skipped at fill: " + why; Journal("skipped", lastNote); return false; }
+     }
    double sl = Px(s.stop), tp = Px(s.target);
    double minDist = StopsLevel();
    if(MathAbs(price - sl) < minDist || MathAbs(tp - price) < minDist)
@@ -519,11 +539,16 @@ void ManagePartial()
    double vol = PositionGetDouble(POSITION_VOLUME);
    double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP), vmin = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
    double part = NormalizeDouble(MathFloor(vol * C.partialPct / 100.0 / step + 1e-9) * step, LotDigits(step));
-   GlobalVariableSet(GV(tk, "part"), 1);
    if(part < vmin - 1e-12 || vol - part < vmin - 1e-12)
-     { Journal("partial skipped", StringFormat("%.3g lots can't be split", vol)); return; }
-   if(trade.PositionClosePartial(tk, part))
+     {
+      GlobalVariableSet(GV(tk, "part"), 1);
+      Journal("partial skipped", StringFormat("%.3g lots can't be split", vol)); return;
+     }
+   if(trade.PositionClosePartial(tk, part))                // marked done only once it worked, so a failed close is retried
+     {
+      GlobalVariableSet(GV(tk, "part"), 1);
       Journal("partial", StringFormat("closed %.3g of %.3g lots at +%.1fR", part, vol, C.partialR));
+     }
   }
 
 // Break-even and trailing stop: at each candle close, only ever tightening.
@@ -548,8 +573,10 @@ void ManageStops()
    double newSL = sl;
    string kind = "";
 
-   if(C.beR > 0 && progress >= C.beR && (side == 1 ? openPrice > newSL && openPrice < lastClose : openPrice < newSL && openPrice > lastClose))
-     { newSL = openPrice; kind = "break-even"; }
+   double beLevel = openPrice;
+   if(InpBEOffsetR > 0) beLevel = openPrice + side * (InpBEOffsetR * risk + (tick.ask - tick.bid));
+   if(C.beR > 0 && progress >= C.beR && (side == 1 ? beLevel > newSL && beLevel < lastClose : beLevel < newSL && beLevel > lastClose))
+     { newSL = beLevel; kind = "break-even"; }
    if(C.trail != TRAIL_NONE && progress >= C.trailStartR)
      {
       double level = 0;
