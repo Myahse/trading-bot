@@ -54,6 +54,7 @@ struct Config
   {
    ENUM_TIMEFRAMES   htf;
    int               pivot, htfPivot, minConfluence, confirm, confirmBars, retest, cooldown, obMaxAge, zoneLookback;
+   int               zoneMinTouches;      // swings a chart-timeframe zone needs before it counts (2 = default)
    double            minRR, defaultRR, minStopATR;
    bool              trendFilter, breakouts;
    double            riskPct, minLotMaxRisk, beR, partialR, partialPct, trailStartR, trailATR, maxDailyLoss;
@@ -540,7 +541,7 @@ bool Analyse(int shift = 1)
    double c = R[t].close;
 
    Zone z[];
-   BuildLevels(P, NP, A, ZONE_TOL_ATR, C.zoneLookback, 2, z);
+   BuildLevels(P, NP, A, ZONE_TOL_ATR, C.zoneLookback, MathMax(2, C.zoneMinTouches), z);
    SplitZones(z, c, ZS, ZR);
    ArrayResize(L, 0);
    FindLines(R, N, P, NP, A, t, C.retest, 2 * (C.pivot + C.pivot), false, L);

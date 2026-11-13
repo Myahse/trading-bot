@@ -33,6 +33,7 @@ input int      InpCooldownBars    = 6;              // Bars to stand aside after
 input double   InpMinStopATR      = 1.0;            // Minimum stop distance in ATR
 input int      InpOBMaxAge        = 100;            // Bars an order block stays valid
 input int      InpZoneLookback    = 30;             // Recent swings used to build zones
+input int      InpZoneMinTouches  = 2;              // Swings a zone needs before it is traded (2 = as before, 3 = only tested zones)
 input bool     InpZoneBest        = false;          // Chart: only the best zone (true) or every tradable zone
 input bool     InpPatterns        = true;           // Candlestick/chart patterns count as levels (Custom preset)
 
@@ -164,7 +165,7 @@ void Screenshot(string tag)
 void LoadConfig()
   {
    // Custom: the inputs
-   C.htf = InpHTF; C.pivot = InpPivot; C.htfPivot = InpHTFPivot; C.minConfluence = InpMinConfluence;
+   C.htf = InpHTF; C.pivot = InpPivot; C.htfPivot = InpHTFPivot; C.minConfluence = InpMinConfluence; C.zoneMinTouches = InpZoneMinTouches;
    C.confirm = (int)InpConfirm; C.confirmBars = InpConfirmBars; C.retest = InpRetestBars; C.cooldown = InpCooldownBars;
    C.obMaxAge = InpOBMaxAge; C.zoneLookback = InpZoneLookback; C.minRR = InpMinRR; C.defaultRR = InpDefaultRR;
    C.minStopATR = InpMinStopATR; C.trendFilter = InpTrendFilter; C.breakouts = InpBreakouts;
