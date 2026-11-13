@@ -65,6 +65,11 @@ input bool     InpFillRRCheck     = false;          // Recheck reward:risk at th
 input bool     InpFillRecheck     = false;          // Recheck news and spread at the fill, not only when the setup is armed
 input double   InpBEOffsetR       = 0;              // Break-even: put the stop this many R past entry, plus the spread (0 = exactly at entry)
 
+input group "Drawdown brake"
+input double   InpDDBrakePct      = 0;              // Cut risk once the balance is this % below its peak (0 = off)
+input double   InpDDBrakeMult     = 0.5;            // Risk multiplier while the brake is on
+input double   InpWeeklyLossPct   = 0;              // No new trades for the rest of the week after losing this % since Monday (0 = off)
+
 input group "News and safety"
 input bool     InpNewsFilter      = true;           // No new trades around high-impact news (forex/gold)
 input int      InpNewsMinutes     = 30;             // Minutes before/after the news
@@ -243,6 +248,46 @@ bool DailyLimitsOk(string &why)
    return true;
   }
 
+// Weekly loss stop: closed P/L since Monday 00:00 server time, over all symbols with this magic number.
+bool WeeklyLimitOk(string &why)
+  {
+   if(InpWeeklyLossPct <= 0) return true;
+   MqlDateTime d;
+   TimeToStruct(TimeCurrent(), d);
+   int back = (d.day_of_week + 6) % 7;                     // days since Monday
+   d.hour = 0; d.min = 0; d.sec = 0;
+   datetime start = StructToTime(d) - back * 86400;
+   if(!HistorySelect(start, TimeCurrent() + 60)) return true;
+   double closed = 0;
+   for(int i = HistoryDealsTotal() - 1; i >= 0; i--)
+     {
+      ulong dl = HistoryDealGetTicket(i);
+      if(dl == 0 || HistoryDealGetInteger(dl, DEAL_MAGIC) != InpMagic) continue;
+      closed += HistoryDealGetDouble(dl, DEAL_PROFIT) + HistoryDealGetDouble(dl, DEAL_SWAP) + HistoryDealGetDouble(dl, DEAL_COMMISSION);
+     }
+   double balance = AccountInfoDouble(ACCOUNT_BALANCE), startBal = balance - closed;
+   if(startBal > 0 && closed <= -startBal * InpWeeklyLossPct / 100.0)
+     { why = StringFormat("weekly loss stop: %.2f since Monday (limit %.1f%%)", closed, InpWeeklyLossPct); return false; }
+   return true;
+  }
+
+// Drawdown brake: the highest balance seen, kept in a terminal global so a restart keeps it.
+double PeakBalance(double balance)
+  {
+   string key = "TB.peak." + IntegerToString(InpMagic);
+   double peak = GlobalVariableCheck(key) ? GlobalVariableGet(key) : 0;
+   if(balance > peak) { peak = balance; GlobalVariableSet(key, peak); }
+   return peak;
+  }
+
+double RiskNow(double balance)
+  {
+   if(InpDDBrakePct <= 0) return C.riskPct;
+   double peak = PeakBalance(balance);
+   if(peak > 0 && balance <= peak * (1 - InpDDBrakePct / 100.0)) return C.riskPct * InpDDBrakeMult;
+   return C.riskPct;
+  }
+
 // The spread must not eat more than InpMaxSpreadRisk % of the setup's risk (it made most scalp losses).
 bool SpreadOk(const Signal &s, string &why)
   {
@@ -391,7 +436,8 @@ double CalcLots(int side, double entry, double stop, string &note)
    if(balance <= 0 || tickSize <= 0 || tickValue <= 0 || step <= 0 || dist <= 0)
      { note = "symbol data unavailable"; return 0; }
    double perLot = dist / tickSize * tickValue;          // account currency lost per lot at the stop
-   double lots = MathFloor(balance * C.riskPct / 100.0 / perLot / step + 1e-9) * step;
+   double riskPct = RiskNow(balance);
+   double lots = MathFloor(balance * riskPct / 100.0 / perLot / step + 1e-9) * step;
    if(lots < vmin - 1e-12)
      {
       double minRisk = vmin * perLot / balance * 100.0;
@@ -401,7 +447,7 @@ double CalcLots(int side, double entry, double stop, string &note)
          return 0;
         }
       lots = vmin;
-      note = StringFormat("minimum lot: risking %.1f%% instead of %.1f%%", minRisk, C.riskPct);
+      note = StringFormat("minimum lot: risking %.1f%% instead of %.1f%%", minRisk, riskPct);
      }
    lots = MathMin(lots, vmax);
    double margin = 0;
@@ -1215,7 +1261,7 @@ void OnTick()
          status = "in a trade";
       else if(armed)
          status = "waiting for confirmation";
-      else if(!DailyLimitsOk(why) || InCooldown(why))
+      else if(!DailyLimitsOk(why) || !WeeklyLimitOk(why) || InCooldown(why))
          status = why;
       else if(haveSignal && Taken(R[N - 1].time))
          status = "this setup was already taken";
